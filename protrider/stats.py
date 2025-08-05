@@ -13,25 +13,34 @@ def fit_residuals(res, dis='gaussian'):
         sigma = np.nanstd(res, ddof=1, axis=0)
         mu = np.nanmean(res, axis=0)
         df0 = None
-    else:
+    elif dis == 't':
         mu, sigma, df0 = _fit_t(res)
-
+    elif dis == 'nb':
+        mu = np.nanmean(res, axis=0)
+        sigma = None
+        df0 = None
+    else:
+        raise ValueError(f"Unknown distribution: {dis}")
     return mu, sigma, df0
 
 
-def get_pvals(res, mu, sigma, df0=None, how='two-sided', dis='gaussian'):
+def get_pvals(counts, res, mu, sigma, df0=None, how='two-sided', dis='gaussian', theta=None):
     hows = ('two-sided', 'left', 'right')
     if not how in hows:
         raise ValueError(f'Method should be in <{hows}>')
-    dists = ('gaussian', 't')
+    dists = ('gaussian', 't', 'nb')
     if not dis in dists:
         raise ValueError(f'Distribution should be in <{dists}>')
 
     if dis == 'gaussian':
         pvals, z = _get_pv_norm(res, mu=mu, sigma=sigma, how=how, )
-    else:
+    elif dis == 't':
         assert df0 is not None, "df0 should be provided for t-distribution"
         pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how)
+    elif dis == 'nb':
+        pvals = get_pv_nb(counts, res, mu=mu, theta=theta, how=how)
+        z, _, _, _ = calc_effect(counts, res, "zscores")
+        
 
     return pvals, z
 
@@ -61,6 +70,79 @@ def _get_pv_norm(res, mu, sigma, how='two-sided'):
         pvals = 2 * np.minimum(left_pvals, right_pvals)
     pvals[mask] = np.nan
     return pvals, z
+
+
+def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
+    """
+    Calculates effect sizes based on fitted expected values
+
+    Parameters:
+        counts: observed values (2D array)
+        res: predicted counts (same shape)
+        effect_type: The type of method for effect size calculation.
+                     Must be one or a list of several of the following: 'none',
+                     'fold-change', 'zscores' or 'delta'.
+    Returns:
+        zscore, delta, outrider_fc, outrider_l2fc.
+    """
+    outrider_fc = None
+    outrider_l2fc = None
+    delta = None
+    zScores = None
+
+    if isinstance(effect_type, str):
+        effect_type = [effect_type]
+    for e_type in effect_type:
+        assert e_type in ('fold_change', 'zscores', 'delta', 'none'), (
+            f'Unknown effect_type: {e_type}')
+
+    if "fold_change" in effect_type or "zscores" in effect_type:
+        outrider_fc = (counts + 1) / (res + 1) 
+        outrider_l2fc = np.log2(counts + 1) -  np.log2(res + 1)
+
+    delta = counts - res
+    if "delta" in effect_type:
+        outrider_delta = delta
+    if "zscores" in effect_type:
+        zScores = (outrider_l2fc - np.mean(outrider_l2fc, axis=1, keepdims=True)) / np.std(outrider_l2fc, axis=1, ddof=1, keepdims=True)
+
+    return zScores, delta, outrider_fc, outrider_l2fc
+
+
+def get_pv_nb(counts, res, mu, theta, how='two-sided'):
+    """
+    Compute NB-based p-values for observed counts against expected mean and dispersion.
+
+    Parameters:
+        counts: observed values (2D array)
+        res: predicted counts (same shape)
+        mu: expected mean values (same shape)
+        theta: dispersion parameters (1D, one per gene)
+        how: 'two-sided', 'left', or 'right'
+    Returns:
+        np array: gene-sample pvalues.
+    """
+
+    mu = mu[:, np.newaxis].T
+    theta = theta[:, np.newaxis].T
+
+    if how not in ('two-sided', 'left', 'right'):
+        raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
+
+    mean = res * mu
+    size = theta
+    p = size / (size + mean)
+
+    # Compute CDF, PMF
+    pless = scipy.stats.nbinom.cdf(counts, n=size, p=p)
+    dval = scipy.stats.nbinom.pmf(counts, n=size, p=p)
+
+    if how == 'left':
+        return pless
+    elif how == 'right':
+        return 1 - pless + dval
+    else:  # two-sided
+        return 2 * np.minimum(np.minimum(pless, 1 - pless + dval), 0.5)
 
 
 def _get_pv_t_base(x, mu, sigma, df, how='two-sided'):
@@ -270,3 +352,18 @@ def _false_discovery_control(ps, *, axis=0, method='bh'):
     ps = np.moveaxis(ps, -1, axis)
 
     return np.clip(ps, 0, 1)
+
+
+    def mom(x, theta_min=1e-2, theta_max=1e3, mu_min=0.1):
+        mue = trim_mean(x, proportiontocut=0.125, axis=0)
+        mue = np.maximum(mue, mu_min)
+
+        se = (x - np.array([mue] * x.shape[0])) ** 2
+        see = trim_mean(se, proportiontocut=0.125, axis=0)
+        ve = 1.51 * see
+
+        th = mue ** 2 / (ve - mue)
+        th[th < 0] = theta_max
+
+        re_th = np.maximum(theta_min, np.minimum(theta_max, th))
+        return re_th
