@@ -40,6 +40,10 @@ class PCADataset(ABC):
         except:
             self.perform_svd()
             q = optht(self.centered_log_data_noNA, sv=self.s, sigma=None)
+        if q < 2:
+            logger.warning(f"Optimal latent space dimension is smaller than 2. Check your count matrix and"
+                             "verify that all samples have the expected number of counts\nFor now, the latent space dimension is set to 2.")
+            q = 2
         return q
 
 
@@ -158,6 +162,7 @@ class ProtriderDataset(Dataset, PCADataset):
 
     def __getitem__(self, idx):
         return (self.X[idx], self.torch_mask[idx], self.cov_one_hot[idx], self.prot_means_torch)
+
 
 
 class ProtriderSubset(Subset, PCADataset):
@@ -346,3 +351,172 @@ class ProtriderKfoldCVGenerator(ProtriderCVGenerator):
     def __len__(self):
         """Return the number of folds"""
         return self.num_folds
+
+
+def ƒ(counts_df: pd.DataFrame):
+    """
+    counts_df: raw counts (samples x genes)
+    Returns: centered log counts (samples x genes)
+    """
+    from pydeseq2.preprocessing import deseq2_norm
+
+    # Step 1: compute size factors
+    _, size_factors = deseq2_norm(counts_df.replace(np.nan, 0))
+    s = size_factors[:, np.newaxis]  # shape: (samples, 1)
+
+    # Step 2: compute log((1 + k) / s) without transposing
+    k = counts_df.replace(np.nan, 0).values  # shape: (samples x genes)
+    x0 = np.log((1 + k) / self.size_factors)
+
+    # Step 3: subtract gene-wise mean (column-wise mean)
+    x = x0 - x0.mean(axis=0, keepdims=True)
+
+    return pd.DataFrame(x, index=counts_df.index, columns=counts_df.columns)
+
+
+class OutriderDataset(Dataset, PCADataset):
+    def __init__(self, csv_file, index_col, sa_file=None,
+                 cov_used=None, log_func=np.log,
+                 maxNA_filter=0.3, device=torch.device('cpu')):
+        super().__init__()
+
+        # read csv
+        file_extension = Path(csv_file).suffix
+        if file_extension == '.csv':
+            self.data = pd.read_csv(csv_file).set_index(index_col)
+        elif file_extension == '.tsv':
+            self.data = pd.read_csv(csv_file,
+                                    sep='\t').set_index(index_col)
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}")
+
+        self.device = device
+        self.data = self.data.T
+        self.data.index.names = ['sampleID']
+        self.data.columns.name = 'proteinID'
+        logger.info(f'Finished reading raw data with shape: {self.data.shape}')
+
+
+        # filter out proteins with too many NaNs
+        filtered = np.mean(np.isnan(self.data), axis=0)
+        self.data = (self.data.T[filtered <= maxNA_filter]).T
+        logger.info(
+            f"Filtering out {np.sum(filtered > maxNA_filter)} proteins with too many missing values. New shape: {self.data.shape}")
+        self.raw_data = copy.deepcopy(self.data)  ## for storing output
+
+        # normalize data
+        _, size_factors = deseq2_norm(self.data.replace(np.nan, 0))
+        self.size_factors = size_factors[:, np.newaxis]  # shape: (samples, 1)
+
+        size_factor_df = pd.DataFrame({"sampleID": self.data.index, "sizeFactors": np.ravel(self.size_factors)})
+        self.data, self.passed_filter = self.filter_genes_by_fpkm(self.data, min_fpkm=1, percentage=0.05)
+        self.raw_filtered = copy.deepcopy(self.data)  ## for storing output
+
+        # normalize with size_factors
+        self.data = np.log((1 + self.data) / self.size_factors)
+
+
+        #### FINISHED PREPROCESSING
+
+        # store protein means
+        self.prot_means = np.nanmean(self.data, axis=0, keepdims=1)
+
+        ## Center and mask NaNs in input
+        self.mask = ~np.isfinite(self.data)
+        self.centered_log_data_noNA = self.data - self.prot_means
+        self.centered_log_data_noNA = np.where(self.mask, 0, self.centered_log_data_noNA)
+
+        prot_means_df = pd.DataFrame({"xbar": np.ravel(self.prot_means), "geneID": self.data.columns})
+        # Input and output of autoencoder is:
+        # uncentered data without NaNs, replacing NANs with means
+        # self.X = self.centered_log_data_noNA + self.prot_means  ## same as data but without NAs
+        self.X = self.centered_log_data_noNA
+
+
+        x = pd.DataFrame(self.X, columns=self.data.columns, index=self.data.index)
+        ## to torch
+        self.X = torch.tensor(self.X)
+        # self.X_target = self.X ### needed for outlier injection
+        self.mask = np.array(self.mask.values)
+        self.torch_mask = torch.tensor(self.mask)
+        self.prot_means_torch = torch.from_numpy(self.prot_means).squeeze(0)
+
+        # sample annotation including covariates
+        if sa_file is not None:
+            sa_file_extension = Path(sa_file).suffix
+            if sa_file_extension == '.csv':
+                sample_anno = pd.read_csv(sa_file)
+            elif sa_file_extension == '.tsv':
+                sample_anno = pd.read_csv(sa_file, sep="\t")
+            else:
+                raise ValueError(f"Unsupported file type: {sa_file_extension}")
+            logger.info(f'Finished reading sample annotation with shape: {sample_anno.shape}')
+        else:
+            cov_used = None
+
+        if cov_used is not None:
+            self.covariates = sample_anno.loc[:, cov_used]
+            num_types = ["float64", "float32", "float16",
+                         "complex64", "complex128", "int64",
+                         "int32", "int16", "int8", "uint8"]
+            for col in self.covariates.columns:
+                if self.covariates.loc[:, col].dtype not in num_types:
+                    self.covariates[col] = pd.factorize(self.covariates[col])[0]
+                    self.covariates[col] = np.where(self.covariates[col] < 0,
+                                                    np.max(self.covariates[col]) + 1,
+                                                    self.covariates[col])
+            self.covariates = torch.tensor(self.covariates.values)
+
+            # one_hot encoding of covariates
+            for col in range(self.covariates.shape[1]):
+                one_hot_col = F.one_hot(self.covariates[:, col], num_classes=self.covariates[:, col].max().numpy() + 1)
+                try:
+                    one_hot = torch.cat((one_hot, one_hot_col), dim=1)
+                except:
+                    one_hot = one_hot_col
+            self.cov_one_hot = one_hot
+        else:
+            self.covariates = torch.empty(self.X.shape[0], 0)
+            self.cov_one_hot = torch.empty(self.X.shape[0], 0)
+        logger.info(f'Finished reading covariates. No. one-hot-encoded covariates used: {self.cov_one_hot.shape[1]}')
+        ### Send data to cpu/gpu device
+        self.X = self.X.to(device)
+        self.torch_mask = self.torch_mask.to(device)
+        self.cov_one_hot = self.cov_one_hot.to(device)
+        self.prot_means_torch = self.prot_means_torch.to(device)
+        # self.presence = (~self.torch_mask).long()
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return (self.X[idx], self.torch_mask[idx], self.cov_one_hot[idx], self.prot_means_torch)
+
+    def filter_genes_by_fpkm(self, fpkm_matrix, min_fpkm=1, percentage=0.05):
+        """
+        Filters genes based on minimum FPKM in at least 5% of samples.
+
+        Parameters:
+            fpkm_matrix (pd.DataFrame): samples × genes (rows are samples, columns are genes)
+            min_fpkm (float): Minimum FPKM threshold
+            percentage (float): Fraction of samples that must pass the threshold
+
+        Returns:
+            passed_filter (pd.Series): Boolean mask for each gene (index = gene names)
+            filtered_matrix (pd.DataFrame): Matrix after filtering (samples × genes)
+        """
+        # Number of samples (rows)
+        n_samples = fpkm_matrix.shape[0]
+
+        # Minimum number of samples a gene must pass the threshold in
+        min_samples = max(1, int(np.ceil(percentage * n_samples)))
+
+        # Boolean mask: for each gene (column), count how many samples (rows) have FPKM ≥ min_fpkm
+        passed_filter = (fpkm_matrix >= min_fpkm).sum(axis=0) >= min_samples
+
+        logger.info(f"{len(passed_filter) - passed_filter.sum()} genes out of {len(passed_filter)} are filtered out. New shape: ({n_samples}, {passed_filter.sum()})")
+
+        # Apply filter to keep only columns (genes) that passed
+        filtered_matrix = fpkm_matrix.loc[:, passed_filter]
+
+        return filtered_matrix, passed_filter

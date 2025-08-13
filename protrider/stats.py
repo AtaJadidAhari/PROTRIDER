@@ -38,8 +38,8 @@ def get_pvals(counts, res, mu, sigma, df0=None, how='two-sided', dis='gaussian',
         assert df0 is not None, "df0 should be provided for t-distribution"
         pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how)
     elif dis == 'nb':
-        pvals = get_pv_nb(counts, res, mu=mu, theta=theta, how=how)
         z, _, _, _ = calc_effect(counts, res, "zscores")
+        pvals = get_pv_nb(counts, res, mu=mu, theta=theta, how=how)
         
 
     return pvals, z
@@ -104,7 +104,7 @@ def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
     if "delta" in effect_type:
         outrider_delta = delta
     if "zscores" in effect_type:
-        zScores = (outrider_l2fc - np.mean(outrider_l2fc, axis=1, keepdims=True)) / np.std(outrider_l2fc, axis=1, ddof=1, keepdims=True)
+        zScores = (outrider_l2fc - np.mean(outrider_l2fc, axis=0, keepdims=True)) / np.std(outrider_l2fc, axis=0, ddof=1, keepdims=True)
 
     return zScores, delta, outrider_fc, outrider_l2fc
 

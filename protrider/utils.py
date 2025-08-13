@@ -8,8 +8,8 @@ import logging
 
 import torch
 
-from .model import train, train_val, MSEBCELoss, ProtriderAutoencoder
-from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator
+from .model import train, train_val, MSEBCELoss, ProtriderAutoencoder, NegativeBinomialLoss
+from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset
 from .stats import get_pvals, fit_residuals, adjust_pvals
 from .model_helper import find_latent_dim, init_model
 
@@ -59,10 +59,18 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
     Returns:
 
     """
-
     ## 1. Initialize dataset
     logger.info('Initializing dataset')
-    dataset = ProtriderDataset(csv_file=input_intensities,
+    if config["analysis"] == "protrider":
+        dataset = ProtriderDataset(csv_file=input_intensities,
+                               index_col=config['index_col'],
+                               sa_file=sample_annotation,
+                               cov_used=config['cov_used'],
+                               log_func=log_func,
+                               maxNA_filter=config['max_allowed_NAs_per_protein'],
+                               device=device)
+    elif config["analysis"] == "outrider":
+        dataset = OutriderDataset(csv_file=input_intensities,
                                index_col=config['index_col'],
                                sa_file=sample_annotation,
                                cov_used=config['cov_used'],
@@ -98,14 +106,20 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
                        n_layer=config['n_layers'],
                        h_dim=config['h_dim'],
                        device=device,
-                       presence_absence=config['presence_absence'] if config['n_layers'] == 1 else False
+                       presence_absence=config['presence_absence'] if config['n_layers'] == 1 else False,
+                       model_type=config["analysis"]
                        )
-    criterion = MSEBCELoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
+    # TODO: double check the loss
+    if config["analysis"] == "protrider":
+        criterion = MSEBCELoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
+    elif config["analysis"] == "outrider":
+        #TODO: check performance in both NBL and MSE loss
+        criterion = NegativeBinomialLoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
     logger.info('Model:\n%s', model)
     logger.info('Device: %s', device)
 
     ## 4. Compute initial loss
-    df_out, df_presence, init_loss, init_mse_loss, init_bce_loss = _inference(dataset, model, criterion)
+    df_out, theta, df_presence, init_loss, init_mse_loss, init_bce_loss = _inference(dataset, model, criterion)
     logger.info('Initial loss after model init: %s, mse loss: %s, bce loss: %s', init_loss, init_mse_loss,
                 init_bce_loss)
 
@@ -114,23 +128,36 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
         ## 5. Train model
         train(dataset, model, criterion, n_epochs=config['n_epochs'], learning_rate=float(config['lr']),
               batch_size=config['batch_size'])
-        df_out, df_presence, final_loss, final_mse_loss, final_bce_loss = _inference(dataset, model, criterion)
+        df_out, theta, df_presence, final_loss, final_mse_loss, final_bce_loss = _inference(dataset, model, criterion)
         logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_mse_loss, final_bce_loss)
     else:
         final_loss = init_loss
 
     ## 6. Compute residuals, pvals, zscores
     logger.info('Computing statistics')
-    df_res = dataset.data - df_out  # log data - pred data
+    if config["analysis"] == "protrider":
+        df_res = dataset.data - df_out  # log data - pred data
+    elif config["analysis"] == "outrider":
+        df_res = np.exp(df_out) * dataset.size_factors
+        df_out = df_res
+        if config['autoencoder_training'] is False:
+            # Fitting NB for outrider when controling with PCA
+            model.fit_dispersions(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
+            theta = model.theta.get_dispersions()
 
+    # TODO: if we are using outrider, move the line 144 inside fit_residuals
     mu, sigma, df0 = fit_residuals(df_res.values, dis=config['pval_dist'])
-    pvals, Z = get_pvals(df_res.values,
+
+    pvals, Z = get_pvals(dataset.raw_filtered.values,
+                         df_res.values,
                          mu=mu,
                          sigma=sigma,
                          df0=df0,
                          how=config['pval_sided'],
-                         dis=config['pval_dist'])
+                         dis=config['pval_dist'],
+                         theta=theta)
     pvals_adj = adjust_pvals(pvals, method=config["pval_adj"])
+
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
                              pvals=pvals, Z=Z, pvals_adj=pvals_adj,
                              pseudocount=config['pseudocount'], outlier_threshold=config['outlier_threshold'],
@@ -321,9 +348,9 @@ def _plot_loss_history(train_losses, val_losses, fold, out_dir):
 
 def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: ProtriderAutoencoder, criterion: MSEBCELoss):
     X_out = model(dataset.X, dataset.torch_mask, cond=dataset.cov_one_hot)
-
     loss, mse_loss, bce_loss = criterion(X_out, dataset.X, dataset.torch_mask, detached=True)
     df_presence = None
+    theta = None
     if model.presence_absence:
         presence_hat = torch.sigmoid(X_out[1])  # Predicted presence (0–1)
         X_out = X_out[0]  # Predicted intensities
@@ -331,13 +358,15 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
         df_presence = pd.DataFrame(presence_hat.detach().cpu().numpy())
         df_presence.columns = dataset.data.columns
         df_presence.index = dataset.data.index
+    if model.model_type == "outrider":
+        theta = model.theta.get_dispersions()
+
 
     df_out = pd.DataFrame(X_out.detach().cpu().numpy())
     df_out.columns = dataset.data.columns
     df_out.index = dataset.data.index
 
-    return df_out, df_presence, loss, mse_loss, bce_loss
-
+    return df_out, theta, df_presence, loss, mse_loss, bce_loss
 
 def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn):
     # Store as df

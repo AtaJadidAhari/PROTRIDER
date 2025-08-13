@@ -7,6 +7,8 @@ import math
 import numpy as np
 import logging
 import torch.nn.functional as F
+import pandas as pd
+from .dispersions import Dispersions_ML, NegativeBinomialDistribution
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +63,9 @@ class ConditionalEnDecoder(nn.Module):
 
 class ProtriderAutoencoder(nn.Module):
     def __init__(self, in_dim, latent_dim, n_layers=1, n_cov=0, h_dim=None,
-                 prot_means=None, presence_absence=False):
+                 prot_means=None, presence_absence=False, model_type="protrider"):
         super().__init__()
+        self.model_type = model_type
         self.n_layers = n_layers
         self.presence_absence = presence_absence
         self.encoder = ConditionalEnDecoder(in_dim=in_dim + n_cov,
@@ -74,6 +77,10 @@ class ProtriderAutoencoder(nn.Module):
                                             h_dim=h_dim, n_layers=n_layers,
                                             is_encoder=False, prot_means=prot_means)
 
+        if self.model_type == "outrider":
+            self.nb_distribution = NegativeBinomialDistribution()
+            self.theta = Dispersions_ML(self.nb_distribution)
+
     def forward(self, x, mask, cond=None):
         if self.presence_absence:
             presence = (~mask).double()
@@ -82,6 +89,7 @@ class ProtriderAutoencoder(nn.Module):
 
         z = self.encoder(x, cond=cond)
         out = self.decoder(z, cond=cond)
+
         return out
 
     def initialize_wPCA(self, Vt_q, prot_means, n_cov=0):
@@ -103,6 +111,8 @@ class ProtriderAutoencoder(nn.Module):
                            torch.zeros(1,n_cov).to(device)#torch.FloatTensor(1, n_cov).uniform_(-stdv, stdv).to(device)  # alternatively just set to zero
                            ], axis=1)
         self.encoder.model.bias.data.copy_(-(Vt_q @ b.T).flatten())
+        ## There is not bias in outrider, we might change this later
+        self.encoder.model.bias.data.copy_(0)
 
         ## DECODER weights: (n_prots or n_prots, q+cov), bias: (n_prot)
         self.decoder.model.bias.data.copy_(torch.from_numpy(prot_means).squeeze(0))
@@ -111,7 +121,14 @@ class ProtriderAutoencoder(nn.Module):
         self.decoder.model.weight.data.copy_(
             torch.cat([Vt_q.T[:n_prots].to(device),
                        cov_dec_init.to(device)], axis=1)
-        )      
+        )
+
+    def init_dispersions(self, x_true):
+        self.theta.init(x_true)
+
+    def fit_dispersions(self, x_true, x_pred):
+        self.theta.fit(x_true, x_pred)
+
 
 def mse_masked(x_hat, x, mask):
     mse_loss = nn.MSELoss(reduction="none")
@@ -230,6 +247,10 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         loss.backward()
         optimizer.step()
 
+        # Update dispersions in OUTRIDER model
+        if model.model_type == "outrider":
+            model.fit_dispersions(x, x_hat)
+
         # Gather data and report
         running_loss += loss.item()
         running_mse_loss += mse_loss.item()
@@ -237,3 +258,56 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         n_batches += 1
 
     return running_loss / n_batches, running_mse_loss / n_batches, running_bce_loss / n_batches
+
+
+class NegativeBinomialLoss(nn.Module):
+    # TODO: updated this
+    def __init__(self, presence_absence=False, lambda_bce=1.0, eps=1e-8):
+        super().__init__()
+        self.presence_absence = presence_absence
+        self.lambda_bce = lambda_bce
+        self.eps = eps
+
+    def forward(self, xhat, x, mask=None, detached=False):
+        """
+        mu: predicted mean (batch_size x genes)
+        k: observed counts (batch_size x genes)
+        theta: dispersion (genes,) — must be 1D
+        mask: optional mask (same shape as k), with 0 to ignore entries
+        detached: if True, return .detach().cpu().numpy() versions
+        """
+
+        theta = xhat[1].unsqueeze(0)  # Shape: (1 x genes), broadcast across batch
+        mu = xhat[0]
+        k = x
+
+        # Core NLL terms
+        t1 = k * torch.log(mu + self.eps)
+        t2 = theta * torch.log(theta + self.eps)
+        t3 = (k + theta) * torch.log(mu + theta + self.eps)
+        t4 = torch.lgamma(k + theta)
+        t5 = torch.lgamma(theta)
+        t6 = torch.lgamma(k + 1)
+
+        nll = -(t1 + t2 - t3 - t4 + t5 + t6)
+
+        if mask is not None:
+            nll = nll * mask
+            nb_loss = nll.sum() / mask.sum()
+        else:
+            nb_loss = nll.mean()
+
+        # --- BCE Loss (if applicable) ---
+        if self.presence_absence:
+            bce_loss = F.binary_cross_entropy(torch.sigmoid(presence_hat), presence)
+            loss = nb_loss + self.lambda_bce * bce_loss
+        else:
+            bce_loss = None
+            loss = nb_loss
+
+        if detached:
+            return (loss.detach().cpu().numpy(),
+                    nb_loss.detach().cpu().numpy(),
+                    bce_loss.detach().cpu().numpy() if bce_loss is not None else None)
+
+        return loss, nb_loss, bce_loss

@@ -86,13 +86,16 @@ def find_latent_dim(dataset, method='OHT',
 
 
 def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, device=torch.device('cpu'),
-               presence_absence=False):
+               presence_absence=False, model_type="protrider"):
     n_cov = dataset.cov_one_hot.shape[1]
     n_prots = dataset.X.shape[1]
     model = ProtriderAutoencoder(in_dim=n_prots, latent_dim=latent_dim, n_layers=n_layer, h_dim=h_dim, n_cov=n_cov,
                                  prot_means=None if init_wPCA else dataset.prot_means_torch,
-                                 presence_absence=presence_absence)
+                                 presence_absence=presence_absence, model_type=model_type)
     model.double().to(device)
+
+    if model.model_type == "outrider":
+        model.init_dispersions(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64))
 
     if init_wPCA:
         logger.info('\tInitializing model weights with PCA')
@@ -176,3 +179,4 @@ def _get_prec_recall(X_pvalue, X_is_outlier):
     pre, rec, _ = precision_recall_curve(label, score)
     curve_auc = auc(rec, pre)
     return curve_auc  # {"auc": curve_auc, "pre": pre, "rec": rec}
+

@@ -1,13 +1,16 @@
 # path to output directory to store result files
 out_dir: output
 # column name in the input file indicating the column name containing the protein names/IDs
-index_col: "protein_ID"
+index_col: "geneID"
 
 ## Preprocessing params
 # maximum percentage of missing values per protein
 max_allowed_NAs_per_protein: 0.3
 # transformation funtion to apply to the data before model fitting. options are log10, log2, and log
-log_func_name: "log"
+#log_func_name: "log"
+
+analysis: "outrider"
+fpkmCutoff: 1
 
 # names of columns in the sample annotation file to be passed as covariates to the autoencoder.
 # leaving this empty results in no covariates passed to the model
@@ -27,7 +30,7 @@ inj_sd: 1.6
 gs_epochs: 100
 
 ## Model params
-autoencoder_training: True ## when set to false, it returns values after (PCA) initialization without training
+autoencoder_training: False ## when set to false, it returns values after (PCA) initialization without training
 
 n_layers: 1 # number of layers for the autoencoder model
 n_epochs: 100 # number of training epochs
@@ -50,7 +53,7 @@ cross_val: False # run protrider in k-fold cross-validation mode; only implement
 #fit_every_fold: False # fit residual model for every fold; defaults to false
 
 ## Stat params
-pval_dist: 't' # Distribution choice for P-value computation. Options: gaussian, t
+pval_dist: 'nb' # Distribution choice for P-value computation. Options: gaussian, t, nb
 pval_adj: 'by' # Multiple testing correction. Options: by, bh
 pval_sided: 'two-sided'
 pseudocount: 0.01 # for FC computation
@@ -60,4 +63,4 @@ outlier_threshold: 0.1
 report_all: True
 
 verbose: False
-device: 'gpu'
+device: 'cpu'
