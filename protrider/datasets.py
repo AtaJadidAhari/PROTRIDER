@@ -54,12 +54,15 @@ class ProtriderDataset(Dataset, PCADataset):
         super().__init__()
 
         # read csv
-        file_extension = Path(csv_file).suffix
-        if file_extension == '.csv':
-            self.data = pd.read_csv(csv_file).set_index(index_col)
-        elif file_extension == '.tsv':
-            self.data = pd.read_csv(csv_file,
-                                    sep='\t').set_index(index_col)
+        suffixes = Path(csv_file).suffixes
+        compression = None
+        if suffixes[-1] == '.gz':
+            compression = 'gzip'
+            suffixes = suffixes[:-1]
+        if suffixes[-1] == '.csv':
+            self.data = pd.read_csv(csv_file, compression=compression).set_index(index_col)
+        elif suffixes[-1] == '.tsv':
+            self.data = pd.read_csv(csv_file, sep='\t', compression=compression).set_index(index_col)
         else:
             raise ValueError(f"Unsupported file type: {file_extension}")
 
@@ -381,12 +384,15 @@ class OutriderDataset(Dataset, PCADataset):
         super().__init__()
 
         # read csv
-        file_extension = Path(csv_file).suffix
-        if file_extension == '.csv':
-            self.data = pd.read_csv(csv_file).set_index(index_col)
-        elif file_extension == '.tsv':
-            self.data = pd.read_csv(csv_file,
-                                    sep='\t').set_index(index_col)
+        suffixes = Path(csv_file).suffixes
+        compression = None
+        if suffixes[-1] == '.gz':
+            compression = 'gzip'
+            suffixes = suffixes[:-1]
+        if suffixes[-1] == '.csv':
+            self.data = pd.read_csv(csv_file, compression=compression).set_index(index_col)
+        elif suffixes[-1] == '.tsv':
+            self.data = pd.read_csv(csv_file, sep='\t', compression=compression).set_index(index_col)
         else:
             raise ValueError(f"Unsupported file type: {file_extension}")
 
