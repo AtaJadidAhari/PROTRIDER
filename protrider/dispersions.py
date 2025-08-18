@@ -95,8 +95,8 @@ class NegativeBinomialDistribution:
         r = dispersion
         mu = x_pred
 
-        # NB log PMF terms: --> TODO: double check this
-        # gammaln(x + r) - gammaln(r) - gammaln(x+1) + r * log(r/(r+mu)) + x * log(mu/(r+mu))
+        # NB log PMF terms:
+        # gammaln(x + r) - gammaln(r) - gammaln(x+1) + r * ln(r/(r+mu)) + x * ln(mu/(r+mu))
         term1 = gammaln(x_true + r) - gammaln(r) - gammaln(x_true + 1)
         term2 = r * torch.log(r / (r + mu))
         term3 = x_true * torch.log(mu / (r + mu))
