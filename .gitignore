@@ -6,3 +6,4 @@ __pycache__/*
 protrider-simulation/
 output/*
 logs/*
+build
