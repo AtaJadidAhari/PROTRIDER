@@ -356,27 +356,6 @@ class ProtriderKfoldCVGenerator(ProtriderCVGenerator):
         return self.num_folds
 
 
-def ƒ(counts_df: pd.DataFrame):
-    """
-    counts_df: raw counts (samples x genes)
-    Returns: centered log counts (samples x genes)
-    """
-    from pydeseq2.preprocessing import deseq2_norm
-
-    # Step 1: compute size factors
-    _, size_factors = deseq2_norm(counts_df.replace(np.nan, 0))
-    s = size_factors[:, np.newaxis]  # shape: (samples, 1)
-
-    # Step 2: compute log((1 + k) / s) without transposing
-    k = counts_df.replace(np.nan, 0).values  # shape: (samples x genes)
-    x0 = np.log((1 + k) / self.size_factors)
-
-    # Step 3: subtract gene-wise mean (column-wise mean)
-    x = x0 - x0.mean(axis=0, keepdims=True)
-
-    return pd.DataFrame(x, index=counts_df.index, columns=counts_df.columns)
-
-
 class OutriderDataset(Dataset, PCADataset):
     def __init__(self, csv_file, index_col, sa_file=None,
                  cov_used=None, log_func=np.log,
