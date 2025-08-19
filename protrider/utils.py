@@ -138,7 +138,8 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
     if config["analysis"] == "protrider":
         df_res = dataset.data - df_out  # log data - pred data
     elif config["analysis"] == "outrider":
-        df_res = np.exp(df_out) * dataset.size_factors
+        df_out_clamped = np.clip(df_out, -700, 700)
+        df_res = np.exp(df_out_clamped) * dataset.size_factors
         df_out = df_res
         if config['autoencoder_training'] is False:
             # Fitting NB for outrider when controling with PCA
