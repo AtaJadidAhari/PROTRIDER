@@ -2,6 +2,8 @@ import torch
 from torch.special import gammaln, digamma
 from scipy.optimize import minimize
 
+from .estimate_theta_robust_moments import estimate_theta_robust_moments
+
 __all__ = ['Dispersions_ML', 'NegativeBinomialDistribution']
 
 
@@ -33,10 +35,10 @@ class Dispersions_ML:
         mom.init(x_true)
         self.dispersions = mom.dispersions.clone()
 
-    def _fit_dispersion_single(self, x_true_gene, x_pred_gene, max_iter=100, lr=0.1, min_disp=1e-2, max_disp=1e6):
+    def _fit_dispersion_single(self, x_true_gene, x_pred_gene, gene_index, max_iter=100, lr=0.1, min_disp=1e-2, max_disp=1e6):
         # TODO: double check the clamping
         # Initialize directly from current dispersion value
-        disp = self.dispersions[0].clone().detach().to(torch.float64).requires_grad_(True) 
+        disp = self.dispersions[gene_index].clone().detach().to(torch.float64).requires_grad_(True) 
         optimizer = torch.optim.LBFGS([disp], max_iter=max_iter, line_search_fn='strong_wolfe')
     
         x_true_gene = x_true_gene.to(torch.float64)
@@ -63,8 +65,8 @@ class Dispersions_ML:
         genes = x_true.shape[0]
         fitted_disps = torch.empty(genes, dtype=torch.float64)
 
-        for g in range(genes):
-            fitted_disps[g] = self._fit_dispersion_single(x_true[g], x_pred[g])
+        for gene_index in range(genes):
+            fitted_disps[gene_index] = self._fit_dispersion_single(x_true[gene_index], x_pred[gene_index], gene_index=gene_index)
 
         self.dispersions = fitted_disps
         return self.dispersions
@@ -75,21 +77,9 @@ class NegativeBinomialDistribution:
         pass
 
     def mom(self, x_true):
-        mean = x_true.mean(dim=1)
-        var = x_true.var(dim=1, unbiased=True)
-        theta = torch.empty_like(mean)
-
-        for i in range(len(mean)):
-            m = mean[i]
-            v = var[i]
-            if v > m:
-                theta[i] = (m ** 2) / (v - m)
-            else:
-                theta[i] = torch.tensor(1.0)
-        return theta.clamp(min=1e-2, max=1e3)
+        return estimate_theta_robust_moments(counts=x_true.T, theta_min=1e-2, theta_max=1e3)
 
     def loss(self, dispersion, x_true, x_pred, eps=1e-8):
-        # TODO: check this
         # Negative log-likelihood for NB for one gene (dispersion scalar)
         # x_true and x_pred: tensors, shape (samples,)
         r = dispersion
