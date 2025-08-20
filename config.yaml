@@ -11,6 +11,7 @@ max_allowed_NAs_per_protein: 0.3
 
 analysis: "outrider"
 fpkmCutoff: 1
+gene_fpkms: "/s/project/py_outrider/demo_pca/Output/processed_results/aberrant_expression/v29/outrider/outrider/checkpoints/fpkm.tsv"
 
 # names of columns in the sample annotation file to be passed as covariates to the autoencoder.
 # leaving this empty results in no covariates passed to the model

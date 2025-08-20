@@ -8,7 +8,7 @@ __all__ = ["fit_residuals", "get_pvals", "adjust_pvals"]
 
 logger = logging.getLogger(__name__)
 
-def fit_residuals(res, dis='gaussian'):
+def fit_residuals(res, counts, dis='gaussian'):
     if dis == 'gaussian':
         sigma = np.nanstd(res, ddof=1, axis=0)
         mu = np.nanmean(res, axis=0)
@@ -16,7 +16,8 @@ def fit_residuals(res, dis='gaussian'):
     elif dis == 't':
         mu, sigma, df0 = _fit_t(res)
     elif dis == 'nb':
-        mu = np.nanmean(res, axis=0)
+        normed = counts / res
+        mu = normed.mean(axis=0)
         sigma = None
         df0 = None
     else:

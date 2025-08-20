@@ -75,7 +75,8 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
                                sa_file=sample_annotation,
                                cov_used=config['cov_used'],
                                log_func=log_func,
-                               maxNA_filter=config['max_allowed_NAs_per_protein'],
+                               fpkm_cutoff=config['fpkmCutoff'],
+                               gene_fpkm_path=config['gene_fpkms'],
                                device=device)
 
     ## 2. Find latent dim
@@ -138,16 +139,14 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
     if config["analysis"] == "protrider":
         df_res = dataset.data - df_out  # log data - pred data
     elif config["analysis"] == "outrider":
-        df_out_clamped = np.clip(df_out, -700, 700)
-        df_res = np.exp(df_out_clamped) * dataset.size_factors
+        df_res = np.exp(df_out) * dataset.size_factors
         df_out = df_res
         if config['autoencoder_training'] is False:
             # Fitting NB for outrider when controling with PCA
             model.fit_dispersions(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
             theta = model.theta.get_dispersions()
 
-    # TODO: if we are using outrider, move the line 144 inside fit_residuals
-    mu, sigma, df0 = fit_residuals(df_res.values, dis=config['pval_dist'])
+    mu, sigma, df0 = fit_residuals(df_res.values, dataset.raw_filtered.values, dis=config['pval_dist'])
 
     pvals, Z = get_pvals(dataset.raw_filtered.values,
                          df_res.values,

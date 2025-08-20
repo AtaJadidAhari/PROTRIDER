@@ -359,7 +359,8 @@ class ProtriderKfoldCVGenerator(ProtriderCVGenerator):
 class OutriderDataset(Dataset, PCADataset):
     def __init__(self, csv_file, index_col, sa_file=None,
                  cov_used=None, log_func=np.log,
-                 maxNA_filter=0.3, device=torch.device('cpu')):
+                 fpkm_cutoff=1, gene_fpkm_path=None,
+                 device=torch.device('cpu')):
         super().__init__()
 
         # read csv
@@ -373,7 +374,10 @@ class OutriderDataset(Dataset, PCADataset):
         elif suffixes[-1] == '.tsv':
             self.data = pd.read_csv(csv_file, sep='\t', compression=compression).set_index(index_col)
         else:
-            raise ValueError(f"Unsupported file type: {file_extension}")
+            raise ValueError(f"Unsupported file type: {suffixes[-1]}")
+
+        if gene_fpkm_path is not None:
+            gene_fpkms = pd.read_csv(gene_fpkm_path, sep="\t")
 
         self.device = device
         self.data = self.data.T
@@ -381,12 +385,6 @@ class OutriderDataset(Dataset, PCADataset):
         self.data.columns.name = 'proteinID'
         logger.info(f'Finished reading raw data with shape: {self.data.shape}')
 
-
-        # filter out proteins with too many NaNs
-        filtered = np.mean(np.isnan(self.data), axis=0)
-        self.data = (self.data.T[filtered <= maxNA_filter]).T
-        logger.info(
-            f"Filtering out {np.sum(filtered > maxNA_filter)} proteins with too many missing values. New shape: {self.data.shape}")
         self.raw_data = copy.deepcopy(self.data)  ## for storing output
 
         # normalize data
@@ -394,7 +392,11 @@ class OutriderDataset(Dataset, PCADataset):
         self.size_factors = size_factors[:, np.newaxis]  # shape: (samples, 1)
 
         size_factor_df = pd.DataFrame({"sampleID": self.data.index, "sizeFactors": np.ravel(self.size_factors)})
-        self.data, self.passed_filter = self.filter_genes_by_fpkm(self.data, min_fpkm=1, percentage=0.05)
+        if gene_fpkms is None:
+            self.data, self.passed_filter = self.filter_genes_by_fpkm(self.data, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
+        else:
+            _, self.passed_filter = self.filter_genes_by_fpkm(gene_fpkms.T, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
+            self.data = self.data.loc[:, self.passed_filter.values]
         self.raw_filtered = copy.deepcopy(self.data)  ## for storing output
 
         # normalize with size_factors
@@ -477,7 +479,7 @@ class OutriderDataset(Dataset, PCADataset):
     def __getitem__(self, idx):
         return (self.X[idx], self.torch_mask[idx], self.cov_one_hot[idx], self.prot_means_torch)
 
-    def filter_genes_by_fpkm(self, fpkm_matrix, min_fpkm=1, percentage=0.05):
+    def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentage=0.05):
         """
         Filters genes based on minimum FPKM in at least 5% of samples.
 
@@ -497,7 +499,7 @@ class OutriderDataset(Dataset, PCADataset):
         min_samples = max(1, int(np.ceil(percentage * n_samples)))
 
         # Boolean mask: for each gene (column), count how many samples (rows) have FPKM ≥ min_fpkm
-        passed_filter = (fpkm_matrix >= min_fpkm).sum(axis=0) >= min_samples
+        passed_filter = (fpkm_matrix > fpkm_cutoff).sum(axis=0) >= min_samples
 
         logger.info(f"{len(passed_filter) - passed_filter.sum()} genes out of {len(passed_filter)} are filtered out. New shape: ({n_samples}, {passed_filter.sum()})")
 
