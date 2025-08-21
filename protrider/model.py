@@ -8,7 +8,7 @@ import numpy as np
 import logging
 import torch.nn.functional as F
 import pandas as pd
-from .dispersions import Dispersions_ML, NegativeBinomialDistribution
+from .dispersions import NegativeBinomialDistribution
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +76,7 @@ class ProtriderAutoencoder(nn.Module):
                                             out_dim=in_dim,
                                             h_dim=h_dim, n_layers=n_layers,
                                             is_encoder=False, prot_means=prot_means)
-
-        if self.model_type == "outrider":
-            self.nb_distribution = NegativeBinomialDistribution()
-            self.theta = Dispersions_ML(self.nb_distribution)
+            
 
     def forward(self, x, mask, cond=None):
         if self.presence_absence:
@@ -124,7 +121,7 @@ class ProtriderAutoencoder(nn.Module):
         )
 
     def init_dispersions(self, x_true):
-        self.theta.init(x_true)
+        self.theta = NegativeBinomialDistribution(x_true)
 
     def fit_dispersions(self, x_true, x_pred):
         self.theta.fit(x_true, x_pred)
@@ -260,8 +257,8 @@ def _train_iteration(data_loader, model, criterion, optimizer):
     return running_loss / n_batches, running_mse_loss / n_batches, running_bce_loss / n_batches
 
 
+    # TODO: updated this: take the implementation from dispersions.py and put it in here    
 class NegativeBinomialLoss(nn.Module):
-    # TODO: updated this
     def __init__(self, presence_absence=False, lambda_bce=1.0, eps=1e-8):
         super().__init__()
         self.presence_absence = presence_absence
