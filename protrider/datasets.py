@@ -391,7 +391,6 @@ class OutriderDataset(Dataset, PCADataset):
         _, size_factors = deseq2_norm(self.data.replace(np.nan, 0))
         self.size_factors = size_factors[:, np.newaxis]  # shape: (samples, 1)
 
-        size_factor_df = pd.DataFrame({"sampleID": self.data.index, "sizeFactors": np.ravel(self.size_factors)})
         if gene_fpkms is None:
             self.data, self.passed_filter = self.filter_genes_by_fpkm(self.data, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
         else:
@@ -419,10 +418,12 @@ class OutriderDataset(Dataset, PCADataset):
         # self.X = self.centered_log_data_noNA + self.prot_means  ## same as data but without NAs
         self.X = self.centered_log_data_noNA
 
-
-        x = pd.DataFrame(self.X, columns=self.data.columns, index=self.data.index)
         ## to torch
         self.X = torch.tensor(self.X)
+
+        ## to torch
+        self.raw_x = torch.tensor(self.raw_filtered.values)
+
         # self.X_target = self.X ### needed for outlier injection
         self.mask = np.array(self.mask.values)
         self.torch_mask = torch.tensor(self.mask)
@@ -477,7 +478,7 @@ class OutriderDataset(Dataset, PCADataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        return (self.X[idx], self.torch_mask[idx], self.cov_one_hot[idx], self.prot_means_torch)
+        return (self.X[idx], self.torch_mask[idx], self.cov_one_hot[idx], self.prot_means_torch, self.raw_x[idx], torch.tensor(self.size_factors)[idx])
 
     def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentage=0.05):
         """

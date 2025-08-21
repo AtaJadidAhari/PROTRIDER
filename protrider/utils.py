@@ -111,9 +111,9 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
                        model_type=config["analysis"]
                        )
     # TODO: double check the loss
-    if config["analysis"] == "protrider":
+    if config["ae_loss"] == "MSE":
         criterion = MSEBCELoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
-    elif config["analysis"] == "outrider":
+    elif config["ae_loss"] == "NLL":
         #TODO: check performance in both NBL and MSE loss
         criterion = NegativeBinomialLoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
     logger.info('Model:\n%s', model)
@@ -139,6 +139,7 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
     if config["analysis"] == "protrider":
         df_res = dataset.data - df_out  # log data - pred data
     elif config["analysis"] == "outrider":
+        df_out_clamped = np.clip(df_out, -700, 700)
         df_res = np.exp(df_out) * dataset.size_factors
         df_out = df_res
         if config['autoencoder_training'] is False:
