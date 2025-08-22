@@ -63,8 +63,8 @@ def find_latent_dim(dataset, method='OHT',
                 X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
                 X_in[injected_dataset.mask] = np.nan
                 res = X_in - X_out
-                mu, sigma, df0 = fit_residuals(X_in - X_out, dis='gaussian')
-                pvals, _ = get_pvals(res,
+                mu, sigma, df0 = fit_residuals(res=res, dis='gaussian')
+                pvals, _ = get_pvals(res=res,
                                      mu=mu, sigma=sigma, df0=df0,
                                      how=pval_sided,
                                      dis='gaussian',
@@ -93,9 +93,6 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
                                  prot_means=None if init_wPCA else dataset.prot_means_torch,
                                  presence_absence=presence_absence, model_type=model_type)
     model.double().to(device)
-
-    if model.model_type == "outrider":
-        model.init_dispersions(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64))
 
     if init_wPCA:
         logger.info('\tInitializing model weights with PCA')

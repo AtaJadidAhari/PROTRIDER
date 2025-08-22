@@ -353,18 +353,3 @@ def _false_discovery_control(ps, *, axis=0, method='bh'):
     ps = np.moveaxis(ps, -1, axis)
 
     return np.clip(ps, 0, 1)
-
-
-    def mom(x, theta_min=1e-2, theta_max=1e3, mu_min=0.1):
-        mue = trim_mean(x, proportiontocut=0.125, axis=0)
-        mue = np.maximum(mue, mu_min)
-
-        se = (x - np.array([mue] * x.shape[0])) ** 2
-        see = trim_mean(se, proportiontocut=0.125, axis=0)
-        ve = 1.51 * see
-
-        th = mue ** 2 / (ve - mue)
-        th[th < 0] = theta_max
-
-        re_th = np.maximum(theta_min, np.minimum(theta_max, th))
-        return re_th

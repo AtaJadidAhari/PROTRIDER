@@ -4,7 +4,7 @@ BIAS_CORRECTION = 1.51
 EPSILON = 1e-8
 
 def estimate_theta_robust_moments(
-    counts: torch.Tensor,
+    x_true: torch.Tensor,
     theta_min: float,
     theta_max: float,
     mu_min: float = 0.01,
@@ -13,7 +13,7 @@ def estimate_theta_robust_moments(
     Robust method of moments estimator for negative binomial theta parameter.
 
     Args:
-        counts: Count matrix of shape (n_samples, n_genes)
+        x_true: Count matrix of shape (n_samples, n_genes)
         theta_max: Upper bound for theta estimates
         theta_min: Lower bound for theta estimates
         mu_min: Lower bound for mean estimates to avoid numerical issues
@@ -22,28 +22,28 @@ def estimate_theta_robust_moments(
         Estimated theta values of shape (n_genes,)
     """
 
-    n_samples, _ = counts.shape
+    n_samples, _ = x_true.shape
     trim_fraction = 1 / 8
     n_trim = int(n_samples * trim_fraction)
 
     if n_trim * 2 >= n_samples:
-        gene_means = torch.mean(counts, dim=0)
+        gene_means = torch.mean(x_true, dim=0)
         gene_means = torch.clamp(gene_means, min=mu_min)
-        gene_vars = torch.var(counts, dim=0, unbiased=True)
+        gene_vars = torch.var(x_true, dim=0, unbiased=True)
         theta_estimates = gene_means**2 / torch.clamp(
             gene_vars - gene_means, min=EPSILON
         )
     else:
-        sorted_counts = torch.sort(counts, dim=0)[0]
-        trimmed_counts = (
-            sorted_counts[n_trim : n_samples - n_trim, :]
+        sorted_x_true = torch.sort(x_true, dim=0)[0]
+        trimmed_x_true = (
+            sorted_x_true[n_trim : n_samples - n_trim, :]
             if n_trim > 0
-            else sorted_counts
+            else sorted_x_true
         )
-        gene_means = torch.mean(trimmed_counts, dim=0)
+        gene_means = torch.mean(trimmed_x_true, dim=0)
         gene_means = torch.clamp(gene_means, min=mu_min)
 
-        squared_residuals = (counts - gene_means.unsqueeze(0)) ** 2
+        squared_residuals = (x_true - gene_means.unsqueeze(0)) ** 2
         sorted_residuals = torch.sort(squared_residuals, dim=0)[0]
         trimmed_residuals = (
             sorted_residuals[n_trim : n_samples - n_trim, :]
