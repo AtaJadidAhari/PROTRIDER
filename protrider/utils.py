@@ -138,25 +138,26 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
     logger.info('Computing statistics')
     if config["analysis"] == "protrider":
         df_res = dataset.data - df_out  # log data - pred data
+        mu, sigma, df0 = fit_residuals(res=df_res.values, x_true=dataset.raw_filtered.values, dis=config['pval_dist'])
     elif config["analysis"] == "outrider":
         df_out_clamped = np.clip(df_out, -700, 700)
         df_res = np.exp(df_out_clamped) * dataset.size_factors
         df_out = df_res
+        sigma = None
+        df0 = None
         if config['autoencoder_training'] is False:
             # Fitting NB for outrider when controling with PCA
-            model.fit_dispersions(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
-            theta = model.theta.get_dispersions()
+            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
+            mu, theta = model.get_dispersion_parameters()
 
-    mu, sigma, df0 = fit_residuals(df_res.values, dataset.raw_filtered.values, dis=config['pval_dist'])
-
-    pvals, Z = get_pvals(dataset.raw_filtered.values,
-                         df_res.values,
+    pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
+                         res=df_res.values,
                          mu=mu,
                          sigma=sigma,
+                         theta=theta,
                          df0=df0,
                          how=config['pval_sided'],
-                         dis=config['pval_dist'],
-                         theta=theta)
+                         dis=config['pval_dist'])
     pvals_adj = adjust_pvals(pvals, method=config["pval_adj"])
 
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
@@ -292,8 +293,8 @@ def run_experiment_cv(input_intensities, config, sample_annotation, log_func, ba
             logger.info('Estimating residual distribution parameters on train-val set')
             df_res_val = val_subset.data - df_out_val  # log data - pred data
             df_res_train = train_subset.data - df_out_train  # log data - pred data
-            mu, sigma, df0 = fit_residuals(pd.concat([df_res_train, df_res_val]).values, dis=config['pval_dist'])
-            pvals, Z = get_pvals(df_res_test.values, mu=mu, sigma=sigma, df0=df0, how=config['pval_sided'])
+            mu, sigma, df0 = fit_residuals(res=pd.concat([df_res_train, df_res_val]).values, dis=config['pval_dist'])
+            pvals, Z = get_pvals(res=df_res_test.values, mu=mu, sigma=sigma, df0=df0, how=config['pval_sided'])
             pvals_list.append(pvals)
             Z_list.append(Z)
             df0_list.append(df0)
@@ -309,8 +310,8 @@ def run_experiment_cv(input_intensities, config, sample_annotation, log_func, ba
         Z = np.concatenate(Z_list)
     else:
         logger.info('Estimating residual distribution parameters')
-        mu, sigma, df0 = fit_residuals(df_res.values, dis=config['pval_dist'])
-        pvals, Z = get_pvals(df_res.values, mu=mu, sigma=sigma, df0=df0,
+        mu, sigma, df0 = fit_residuals(res=df_res.values, dis=config['pval_dist'])
+        pvals, Z = get_pvals(res=df_res.values, mu=mu, sigma=sigma, df0=df0,
                              how=config['pval_sided'])
         df0_list = [df0] * len(df_out)  # Repeat df0 for each sample in the output
 
@@ -360,8 +361,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
         df_presence.columns = dataset.data.columns
         df_presence.index = dataset.data.index
     if model.model_type == "outrider":
-        theta = model.theta.get_dispersions()
-
+        _, theta = model.get_dispersion_parameters()
 
     df_out = pd.DataFrame(X_out.detach().cpu().numpy())
     df_out.columns = dataset.data.columns

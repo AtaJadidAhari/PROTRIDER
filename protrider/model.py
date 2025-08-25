@@ -7,8 +7,7 @@ import math
 import numpy as np
 import logging
 import torch.nn.functional as F
-import pandas as pd
-from .dispersions import NegativeBinomialDistribution
+from .dispersions import Dispersion, NegativeBinomialDistribution
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +75,10 @@ class ProtriderAutoencoder(nn.Module):
                                             out_dim=in_dim,
                                             h_dim=h_dim, n_layers=n_layers,
                                             is_encoder=False, prot_means=prot_means)
+        
+        if self.model_type == "outrider":
+            self.distribution = NegativeBinomialDistribution()
+            self.dispersion = Dispersion(self.distribution)
             
 
     def forward(self, x, mask, cond=None):
@@ -120,11 +123,15 @@ class ProtriderAutoencoder(nn.Module):
                        cov_dec_init.to(device)], axis=1)
         )
 
-    def init_dispersions(self, x_true):
-        self.theta = NegativeBinomialDistribution(x_true)
+    def update_dispersion(self, x_true, x_pred):
+        self.dispersion.update(x_true, x_pred)
 
-    def fit_dispersions(self, x_true, x_pred):
-        self.theta.fit(x_true, x_pred)
+    def fit_dispersion(self, x_true, x_pred):
+        self.dispersion.fit(x_true, x_pred)
+
+    def get_dispersion_parameters(self):
+        """Get dispersion parameters (mu_scale, theta)"""
+        return self.dispersion.get_parameters()
 
 
 def mse_masked(x_hat, x, mask):
@@ -232,7 +239,10 @@ def _train_iteration(data_loader, model, criterion, optimizer):
 
     n_batches = 0
     for batch_idx, data in enumerate(data_loader):
-        x, mask, cov, prot_means = data
+        if model.model_type == "protrider":
+            x, mask, cov, prot_means = data
+        elif model.model_type == "outrider":
+            x, mask, cov, prot_means, raw_x, size_factors = data
 
         # restore grads and compute model out
         optimizer.zero_grad()
@@ -246,7 +256,8 @@ def _train_iteration(data_loader, model, criterion, optimizer):
 
         # Update dispersions in OUTRIDER model
         if model.model_type == "outrider":
-            model.fit_dispersions(x, x_hat)
+            x = torch.exp(x.detach().cpu()) * size_factors # TODO: move this into update_dispersion in dispersions.py
+            model.update_dispersion(x_true=raw_x.T, x_pred=x.T)
 
         # Gather data and report
         running_loss += loss.item()
@@ -256,8 +267,7 @@ def _train_iteration(data_loader, model, criterion, optimizer):
 
     return running_loss / n_batches, running_mse_loss / n_batches, running_bce_loss / n_batches
 
-
-    # TODO: updated this: take the implementation from dispersions.py and put it in here    
+# TODO: remove this and use the distribution.loss from dispersions.py
 class NegativeBinomialLoss(nn.Module):
     def __init__(self, presence_absence=False, lambda_bce=1.0, eps=1e-8):
         super().__init__()

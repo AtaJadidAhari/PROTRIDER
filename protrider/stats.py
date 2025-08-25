@@ -8,24 +8,19 @@ __all__ = ["fit_residuals", "get_pvals", "adjust_pvals"]
 
 logger = logging.getLogger(__name__)
 
-def fit_residuals(res, counts, dis='gaussian'):
+def fit_residuals(res, dis='gaussian'):
     if dis == 'gaussian':
         sigma = np.nanstd(res, ddof=1, axis=0)
         mu = np.nanmean(res, axis=0)
         df0 = None
     elif dis == 't':
         mu, sigma, df0 = _fit_t(res)
-    elif dis == 'nb':
-        normed = counts / res
-        mu = normed.mean(axis=0)
-        sigma = None
-        df0 = None
     else:
         raise ValueError(f"Unknown distribution: {dis}")
     return mu, sigma, df0
 
 
-def get_pvals(counts, res, mu, sigma, df0=None, how='two-sided', dis='gaussian', theta=None):
+def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian'):
     hows = ('two-sided', 'left', 'right')
     if not how in hows:
         raise ValueError(f'Method should be in <{hows}>')
@@ -39,9 +34,8 @@ def get_pvals(counts, res, mu, sigma, df0=None, how='two-sided', dis='gaussian',
         assert df0 is not None, "df0 should be provided for t-distribution"
         pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how)
     elif dis == 'nb':
-        z, _, _, _ = calc_effect(counts, res, "zscores")
-        pvals = get_pv_nb(counts, res, mu=mu, theta=theta, how=how)
-        
+        z, _, _, _ = calc_effect(x_true, res, "zscores")
+        pvals = get_pv_nb(x_true, res, mu=mu, theta=theta, how=how)
 
     return pvals, z
 
@@ -115,23 +109,20 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     Compute NB-based p-values for observed counts against expected mean and dispersion.
 
     Parameters:
-        counts: observed values (2D array)
-        res: predicted counts (same shape)
-        mu: expected mean values (same shape)
-        theta: dispersion parameters (1D, one per gene)
+        counts: observed values (samples, genes)
+        res: predicted counts (samples, genes)
+        mu: baseline expression levels (genes,)
+        theta: dispersion parameters (genes,)
         how: 'two-sided', 'left', or 'right'
     Returns:
         np array: gene-sample pvalues.
     """
 
-    mu = mu[:, np.newaxis].T
-    theta = theta[:, np.newaxis].T
-
     if how not in ('two-sided', 'left', 'right'):
         raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
 
-    mean = res * mu
-    size = theta
+    mean = res * mu[np.newaxis, :]
+    size = np.broadcast_to(theta[np.newaxis, :], counts.shape)
     p = size / (size + mean)
 
     # Compute CDF, PMF
