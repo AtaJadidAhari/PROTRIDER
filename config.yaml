@@ -11,7 +11,7 @@ max_allowed_NAs_per_protein: 0.3
 
 analysis: "outrider"
 fpkmCutoff: 1
-gene_fpkms: "/s/project/py_outrider/demo_pca/Output/processed_results/aberrant_expression/v29/outrider/outrider/checkpoints/fpkm.tsv"
+gene_fpkms: "./sample_data/fpkm.tsv"
 ae_loss: "MSE" # or NLL
 
 # names of columns in the sample annotation file to be passed as covariates to the autoencoder.
@@ -32,7 +32,7 @@ inj_sd: 1.6
 gs_epochs: 100
 
 ## Model params
-autoencoder_training: True ## when set to false, it returns values after (PCA) initialization without training
+autoencoder_training: False ## when set to false, it returns values after (PCA) initialization without training
 
 n_layers: 1 # number of layers for the autoencoder model
 n_epochs: 100 # number of training epochs
