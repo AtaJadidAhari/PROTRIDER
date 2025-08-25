@@ -51,35 +51,31 @@ class Dispersion:
         x_pred_np = x_pred.detach().cpu().numpy()
 
         def nll(params):
-            mu_scale, theta = params
-            mu_scale = np.clip(mu_scale, lower_bound, None)
-            theta = np.clip(theta, lower_bound, None)
+            theta, mu_scale = params
+            theta = max(theta, lower_bound)
+            mu_scale = max(mu_scale, lower_bound)
             mu = x_pred_np * mu_scale
-            mu = np.clip(mu, lower_bound, None)
 
-            r = theta
-            term1 = gammaln(x_true_np + r) - gammaln(r) - gammaln(x_true_np + 1)
-            term2 = r * np.log(r / (r + mu))
-            term3 = x_true_np * np.log(mu / (r + mu))
+            term1 = gammaln(x_true_np + theta) - gammaln(theta) - gammaln(x_true_np + 1)
+            term2 = theta * np.log(theta / (theta + mu))
+            term3 = x_true_np * np.log(mu / (theta + mu))
             log_prob = term1 + term2 + term3
             return -log_prob.sum()
         
         def grad_nll(params):
-            mu_scale, theta = params
-            mu_scale = np.clip(mu_scale, lower_bound, None)
-            theta = np.clip(theta, lower_bound, None)
+            theta, mu_scale = params
+            theta = max(theta, lower_bound)
+            mu_scale = max(mu_scale, lower_bound)
             mu = x_pred_np * mu_scale
-            mu = np.clip(mu, lower_bound, None)
-            r = theta
 
             grad_theta = np.sum(
-                np.log(mu + r) - np.log(r) - 1 +
-                (x_true_np + r) / (r + mu) -
-                digamma(x_true_np + r) + digamma(r)
+                np.log(mu + theta) - np.log(theta) - 1 +
+                (x_true_np + theta) / (theta + mu) -
+                digamma(x_true_np + theta) + digamma(theta)
             )
-            grad_mu_scale = -r / mu_scale * np.sum((x_true_np - mu) / (r + mu))
+            grad_mu_scale = -theta / mu_scale * np.sum((x_true_np - mu) / (theta + mu))
 
-            return np.array([grad_mu_scale, grad_theta])
+            return np.array([grad_theta, grad_mu_scale])
 
         res = sopt.minimize(
             nll,
@@ -87,9 +83,15 @@ class Dispersion:
             method='L-BFGS-B',
             jac=grad_nll,
             bounds=[(lower_bound, None), (lower_bound, None)],
-            options={'maxiter': max_iter}
+            options={
+                'maxiter': max_iter,
+                'ftol': 2.2e-9,
+                'gtol': 0,
+                'maxcor': 5,
+                'eps': 1e-3
+            }
         )
-        mu_scale_final, theta_final = res.x
+        theta_final, mu_scale_final = res.x
         return torch.tensor(mu_scale_final, dtype=torch.float64), torch.tensor(theta_final, dtype=torch.float64)
 
 class NegativeBinomialDistribution:
