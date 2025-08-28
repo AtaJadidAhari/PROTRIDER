@@ -376,6 +376,7 @@ class OutriderDataset(Dataset, PCADataset):
         else:
             raise ValueError(f"Unsupported file type: {suffixes[-1]}")
 
+        gene_fpkms = None
         if gene_fpkm_path is not None:
             gene_fpkms = pd.read_csv(gene_fpkm_path, sep="\t")
 
@@ -497,7 +498,7 @@ class OutriderDataset(Dataset, PCADataset):
         n_samples = fpkm_matrix.shape[0]
 
         # Minimum number of samples a gene must pass the threshold in
-        min_samples = max(1, int(np.ceil(percentage * n_samples)))
+        min_samples = max(1.0, percentage * n_samples)
 
         # Boolean mask: for each gene (column), count how many samples (rows) have FPKM ≥ min_fpkm
         passed_filter = (fpkm_matrix > fpkm_cutoff).sum(axis=0) >= min_samples
