@@ -4,6 +4,7 @@ import pandas as pd
 import scipy.optimize as sopt
 import numpy as np
 from scipy.special import gammaln, digamma
+from joblib import Parallel, delayed
 
 from .estimate_theta_robust_moments import estimate_theta_robust_moments
 
@@ -19,9 +20,10 @@ class Dispersion:
         mu_scale = None if self.mu_scale is None else self.mu_scale.detach().cpu().numpy()
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
         return mu_scale, theta
-    
-    def update(self, x_true, x_pred):
-        print("not yet implemented")
+    def set_dispersion(self, theta):
+        self.theta = theta
+    def clip_theta(self, lower=0.01, upper=1000):
+        self.theta = torch.clip(self.theta, lower, upper)
 
     # TODO: make fit paralel, i.e. not n_parallel=1, but vectorize everything
     # TODO: maybe using torch.vmap ? https://docs.pytorch.org/docs/stable/generated/torch.vmap.html
@@ -33,17 +35,22 @@ class Dispersion:
         theta_fitted = torch.empty(genes, dtype=torch.float64)
         mu_scale_fitted = torch.empty(genes, dtype=torch.float64)
 
-        for gene_index in range(genes):
-            mu_scale_fitted[gene_index], theta_fitted[gene_index] = self._fit_gene(x_true=x_true[gene_index], x_pred=x_pred[gene_index])
+        results = Parallel(n_jobs=-1, prefer="threads")(delayed(self._fit_gene)(x_true=x_true[gene_index], x_pred=x_pred[gene_index]) for gene_index in range(genes))
+
+        for idx, (mu_val, theta_val) in enumerate(results):
+            mu_scale_fitted[idx] = mu_val
+            theta_fitted[idx] = theta_val
+        # for gene_index in range(genes):
+        #     mu_scale_fitted[gene_index], theta_fitted[gene_index] = self._fit_gene(x_true=x_true[gene_index], x_pred=x_pred[gene_index])
 
         self.theta = theta_fitted
         self.mu_scale = mu_scale_fitted
 
-        print("storing values after fitting")
-        out_theta_path = "./intermediate_results/theta.csv"
-        out_mu_scale_path = "./intermediate_results/mu_scale.csv"
-        pd.DataFrame(self.theta.detach().cpu().numpy()).to_csv(out_theta_path, header=False, index=False)
-        pd.DataFrame(self.mu_scale.detach().cpu().numpy()).to_csv(out_mu_scale_path, header=False, index=False)
+        # print("storing values after fitting")
+        # out_theta_path = "./intermediate_results/theta.csv"
+        # out_mu_scale_path = "./intermediate_results/mu_scale.csv"
+        # pd.DataFrame(self.theta.detach().cpu().numpy()).to_csv(out_theta_path, header=False, index=False)
+        # pd.DataFrame(self.mu_scale.detach().cpu().numpy()).to_csv(out_mu_scale_path, header=False, index=False)
 
     def _fit_gene(self, x_true, x_pred, max_iter=100, lower_bound=1e-2):
         mu_scale_init, theta_init = self.distribution.init_fitting(x_true, x_pred)
@@ -61,7 +68,7 @@ class Dispersion:
             term3 = x_true_np * np.log(mu / (theta + mu))
             log_prob = term1 + term2 + term3
             return -log_prob.sum()
-        
+
         def grad_nll(params):
             theta, mu_scale = params
             theta = max(theta, lower_bound)
@@ -79,7 +86,7 @@ class Dispersion:
 
         res = sopt.minimize(
             nll,
-            x0=[mu_scale_init.item(), theta_init.item()],
+            x0=[theta_init.item(), mu_scale_init.item()],
             method='L-BFGS-B',
             jac=grad_nll,
             bounds=[(lower_bound, None), (lower_bound, None)],
@@ -95,8 +102,8 @@ class Dispersion:
         return torch.tensor(mu_scale_final, dtype=torch.float64), torch.tensor(theta_final, dtype=torch.float64)
 
 class NegativeBinomialDistribution:
-    def init_training(self, x_true, x_pred):
-        """Initialize theta and mu for training: theta robust moments, mu_scale as the x_pred"""
+    def init_training(self, x_true):
+        """Initialize theta and mu for training: theta robust moments"""
         theta = estimate_theta_robust_moments(x_true=x_true.T, theta_min=1e-2, theta_max=1e3)
         mu_scale = None
         return mu_scale, theta
