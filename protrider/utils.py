@@ -76,7 +76,7 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
                                cov_used=config['cov_used'],
                                log_func=log_func,
                                fpkm_cutoff=config['fpkmCutoff'],
-                               gene_fpkm_path=config['gene_fpkms'],
+                               gtf=config['gtf'],
                                device=device)
 
     ## 2. Find latent dim
@@ -145,7 +145,12 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
         df_out = df_res
         sigma = None
         df0 = None
-        if config['autoencoder_training'] is False:
+
+        mu, theta = model.get_dispersion_parameters()
+
+        #if config['autoencoder_training'] is False:
+        if mu is None:
+            print('fitting mu even in autoencoder')
             # Fitting NB for outrider when controling with PCA
             model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
             mu, theta = model.get_dispersion_parameters()

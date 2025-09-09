@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from optht import optht
 from tqdm import tqdm
 import logging
+import re
 
 # Create a logger at the top of the file
 logger = logging.getLogger(__name__)
@@ -359,7 +360,7 @@ class ProtriderKfoldCVGenerator(ProtriderCVGenerator):
 class OutriderDataset(Dataset, PCADataset):
     def __init__(self, csv_file, index_col, sa_file=None,
                  cov_used=None, log_func=np.log,
-                 fpkm_cutoff=1, gene_fpkm_path=None,
+                 fpkm_cutoff=1, gtf=None,
                  device=torch.device('cpu')):
         super().__init__()
 
@@ -376,27 +377,30 @@ class OutriderDataset(Dataset, PCADataset):
         else:
             raise ValueError(f"Unsupported file type: {suffixes[-1]}")
 
-        gene_fpkms = None
-        if gene_fpkm_path is not None:
-            gene_fpkms = pd.read_csv(gene_fpkm_path, sep="\t")
-
         self.device = device
         self.data = self.data.T
         self.data.index.names = ['sampleID']
         self.data.columns.name = 'proteinID'
+        self.gtf = gtf
         logger.info(f'Finished reading raw data with shape: {self.data.shape}')
 
         self.raw_data = copy.deepcopy(self.data)  ## for storing output
 
         # normalize data
         _, size_factors = deseq2_norm(self.data.replace(np.nan, 0))
-        self.size_factors = size_factors[:, np.newaxis]  # shape: (samples, 1)
+        self.size_factors = size_factors[:, np.newaxis]
 
-        if gene_fpkms is None:
-            self.data, self.passed_filter = self.filter_genes_by_fpkm(self.data, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
-        else:
-            _, self.passed_filter = self.filter_genes_by_fpkm(gene_fpkms.T, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
-            self.data = self.data.loc[:, self.passed_filter.values]
+
+        # filter based on fpkm
+        logger.info(f'Calculating fpkms')
+
+        gene_lengths_df = self.gene_exonic_lengths_from_gtf(self.gtf)
+        self.fpkms = self.calculate_fpkm(self.raw_data.T, gene_lengths_df)
+
+        logger.info(f'Filtering based on fpkm')
+        _, self.passed_filter = self.filter_genes_by_fpkm(self.fpkms.T, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
+        self.data = self.data.loc[:, self.passed_filter.values]
+
         self.raw_filtered = copy.deepcopy(self.data)  ## for storing output
 
         # normalize with size_factors
@@ -509,3 +513,105 @@ class OutriderDataset(Dataset, PCADataset):
         filtered_matrix = fpkm_matrix.loc[:, passed_filter]
 
         return filtered_matrix, passed_filter
+
+    def gene_exonic_lengths_from_gtf(self, gtf_path: str) -> pd.DataFrame:
+        """
+        Returns a DataFrame with columns: gene_id, exonic_length
+        Collapses overlapping exons per gene across all transcripts --> not necessarily 
+        mane_transcript gene length
+        """
+        def extract_gene_id(attr):
+            m = re.search(r'gene_id\s+"([^"]+)"', attr)
+            if m:
+                return m.group(1)
+            m = re.search(r'gene_id=([^;]+)', attr)
+            if m:
+                return m.group(1)
+            return None
+
+
+        def merge_and_sum(intervals: np.ndarray) -> int:
+            """
+            intervals: Nx2 numpy array of [start, end] (inclusive, 1-based)
+            returns total union length in bp.
+            """
+            if intervals.size == 0:
+                return 0
+
+            # sort by start then end
+            intervals = intervals[np.lexsort((intervals[:,1], intervals[:,0]))]
+
+            total = 0
+            cur_start, cur_end = intervals[0]
+
+            for s, e in intervals[1:]:
+                if s <= cur_end + 1:
+                    if e > cur_end:
+                        cur_end = e
+                else:
+                    total += (cur_end - cur_start + 1)
+                    cur_start, cur_end = s, e
+
+            total += (cur_end - cur_start + 1)
+            return int(total)
+
+        # define col names of gtf file
+        cols = ["seqname","source","feature","start","end","score","strand","frame","attribute"]
+        gtf = pd.read_csv(
+            gtf_path, sep="\t", comment="#", header=None, names=cols,
+            dtype={"seqname":"category","source":"category","feature":"category",
+                   "start":int,"end":int,"score":"string","strand":"category",
+                   "frame":"string","attribute":"string"}
+        )
+
+        # keep only exons
+        exons = gtf[gtf["feature"] == "exon"].copy()
+        if exons.empty:
+            return pd.DataFrame(columns=["gene_id","exonic_length"])
+
+        # gene_id
+        exons["gene_id"] = exons["attribute"].map(extract_gene_id)
+        exons = exons.dropna(subset=["gene_id"])
+
+        # for safety, ensure start <= end
+        bad = (exons["end"] < exons["start"])
+        if bad.any():
+            exons.loc[bad, ["start","end"]] = exons.loc[bad, ["end","start"]].values
+
+        # group by gene and merge intervals
+        def _sum_for_gene(g):
+            ivals = g[["start","end"]].to_numpy(dtype=np.int64)
+            return merge_and_sum(ivals)
+
+        lengths = (
+            exons.groupby("gene_id", sort=False, observed=True)
+                 .apply(_sum_for_gene)
+                 .reset_index(name="exonic_length")
+        )
+        return lengths
+
+    def calculate_fpkm(self, expr_df, lengths_df, robust=True):
+        """
+        expr_df: DataFrame, rows=genes, cols=samples, values=raw counts
+        lengths_df: DataFrame with columns ["gene_id", "gene_length"] (bp)
+
+        Returns: FPKM DataFrame with same shape as expr_df
+        if robus = True, returns size-factor normalized fpkms, same as DESEQ2
+        """
+
+        lengths = lengths_df.set_index("gene_id")["exonic_length"]
+        expr_df = expr_df.copy()
+
+        # make sure order matches
+        expr_df = expr_df.loc[expr_df.index.intersection(lengths.index)]
+        lengths = lengths.loc[expr_df.index]
+
+        if robust is False:
+            library_size = expr_df.sum(axis=0)
+        else:
+            library_size = self.size_factors.T * np.exp(np.mean(np.log(expr_df.sum(axis=0))))
+
+        fpkm = expr_df.div(lengths, axis=0) * 1e9
+        fpkm = fpkm.div(library_size, axis=1)
+
+        return fpkm
