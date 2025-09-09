@@ -8,8 +8,13 @@ import numpy as np
 import logging
 import torch.nn.functional as F
 from .dispersions import Dispersion, NegativeBinomialDistribution
+from scipy.special import gammaln, digamma
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.DEBUG,  # show DEBUG and above
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 class ConditionalEnDecoder(nn.Module):
@@ -224,11 +229,21 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
                                               shuffle=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9995)
 
+    best_model_wts = copy.deepcopy(model.state_dict())  # placeholder
+    best_loss = 10**9
     for epoch in tqdm(range(n_epochs)):
         running_loss, running_mse_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
         logger.debug('[%d] loss: %.6f, mse loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
                                                                           running_mse_loss, running_bce_loss))
+        scheduler.step()
+        if running_loss < best_loss:
+            best_loss = running_loss
+            best_model_wts = copy.deepcopy(model.state_dict())  # save weights
+    
+    model.load_state_dict(best_model_wts)
+    
     return running_loss, running_mse_loss, running_bce_loss
 
 
@@ -248,17 +263,26 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         optimizer.zero_grad()
         x_hat = model(x, mask, cond=cov)
 
+        # if model.model_type == "outrider":
+        #     print(batch_idx, "calling loss from here")
+        #     mu_scale, theta = model.get_dispersion_parameters()
+        #     x_hat = torch.clip(x_hat, -700, 700)
+        #     loss, mse_loss, bce_loss = criterion((theta, torch.exp(x_hat) * size_factors), raw_x.T, mask)
+        # elif model.model_type == "protrider": # should be based on loss, and not model_type
+        #     loss, mse_loss, bce_loss = criterion(x_hat*size_factors, raw_x, mask)
         loss, mse_loss, bce_loss = criterion(x_hat, x, mask)
+ 
 
         # Adjust learning weights
         loss.backward()
         optimizer.step()
 
         # Update dispersions in OUTRIDER model
-        if model.model_type == "outrider":
-            x = torch.exp(x.detach().cpu()) * size_factors # TODO: move this into update_dispersion in dispersions.py
-            model.update_dispersion(x_true=raw_x.T, x_pred=x.T)
-
+        # if model.model_type == "outrider":
+        #     x_hat = torch.clip(x_hat, -700, 700)
+        #     x_hat = torch.exp(x_hat.detach().cpu()) * size_factors
+        #     model.fit_dispersion(raw_x.T, x_hat.T)
+        #     model.dispersion.clip_theta()
         # Gather data and report
         running_loss += loss.item()
         running_mse_loss += mse_loss.item()
@@ -275,7 +299,7 @@ class NegativeBinomialLoss(nn.Module):
         self.lambda_bce = lambda_bce
         self.eps = eps
 
-    def forward(self, xhat, x, mask=None, detached=False):
+    def forward(self, xhat, x_true, mask=None, detached=False):
         """
         mu: predicted mean (batch_size x genes)
         k: observed counts (batch_size x genes)
@@ -284,19 +308,24 @@ class NegativeBinomialLoss(nn.Module):
         detached: if True, return .detach().cpu().numpy() versions
         """
 
-        theta = xhat[1].unsqueeze(0)  # Shape: (1 x genes), broadcast across batch
-        mu = xhat[0]
-        k = x
-
-        # Core NLL terms
-        t1 = k * torch.log(mu + self.eps)
-        t2 = theta * torch.log(theta + self.eps)
-        t3 = (k + theta) * torch.log(mu + theta + self.eps)
-        t4 = torch.lgamma(k + theta)
-        t5 = torch.lgamma(theta)
-        t6 = torch.lgamma(k + 1)
-
-        nll = -(t1 + t2 - t3 - t4 + t5 + t6)
+        #dispersion = xhat[0].unsqueeze(0)  # Shape: (1 x genes), broadcast across batch
+        dispersion = torch.as_tensor(xhat[0], dtype=x_true.dtype, device=x_true.device).unsqueeze(0)
+        x_pred = xhat[1].T
+        # Negative log-likelihood for NB per gene (dispersion scalar)
+        # Ensure numerical stability with epsilon value
+        eps = 1e-10
+        r = torch.clamp(dispersion, min=eps)
+        mu = torch.clamp(x_pred, min=eps)
+        
+        # NB log PMF terms
+        # gammaln(x + r) - gammaln(r) - gammaln(x+1) + r * ln(r/(r+mu)) + x * ln(mu/(r+mu))
+        term1 = torch.special.gammaln(x_true + r) - torch.special.gammaln(r) - torch.special.gammaln(x_true + 1)
+        term2 = r * torch.log(r / (r + mu))
+        term3 = x_true * torch.log(mu / (r + mu))
+        log_prob = term1 + term2 + term3
+        
+        nll =  -log_prob.sum()
+        # print(nll, "loss")
 
         if mask is not None:
             nll = nll * mask

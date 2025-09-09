@@ -96,7 +96,7 @@ def run(config, input_intensities: str, sample_annotation: str = None, out_dir: 
 
     if (config['find_q_method'] == 'OHT') and (config['presence_absence']==True):
         raise ValueError('OHT not implemented with presence/absence analysis yet')
-        
+
     #if (config['presence_absence'] == True) and (config['n_layers']!=1):
     #    raise ValueError('Presence absence inclusion is only with 1-layers models possible')
 
@@ -148,7 +148,7 @@ def _write_results(summary, result: Result, model_info: ModelInfo, out_dir, conf
         out_p = f'{out_dir}/presence_probs.csv'
         result.df_presence.T.to_csv(out_p, header=True, index=True)
         logger.info(f"Saved presence probabilities to {out_p}")
-    
+
     # p-values
     out_p = f'{out_dir}/pvals.csv'
     result.df_pvals.T.to_csv(out_p, header=True, index=True)
@@ -227,11 +227,11 @@ def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, inc
     raw_in = (raw_in.reset_index().melt(id_vars='sampleID')
               .rename(columns={'value': 'PROTEIN_INT'}))
     zscores = (zscores.reset_index().melt(id_vars='sampleID')
-               .rename(columns={'value': 'PROTEIN_ZSCORE'}))
+               .rename(columns={'value': 'zScore'}))
     pvals = (pvals.reset_index().melt(id_vars='sampleID')
-             .rename(columns={'value': 'PROTEIN_PVALUE'}))
+             .rename(columns={'value': 'pValue'}))
     pvals_adj = (pvals_adj.reset_index().melt(id_vars='sampleID')
-                 .rename(columns={'value': 'PROTEIN_PADJ'}))
+                 .rename(columns={'value': 'padjust'}))
     log2fc = (log2fc.reset_index().melt(id_vars='sampleID')
               .rename(columns={'value': 'PROTEIN_LOG2FC'}))
     fc = (fc.reset_index().melt(id_vars='sampleID')
@@ -252,9 +252,10 @@ def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, inc
               .rename(columns={'value': 'pred_presence_probability'}))
         df_res = df_res.merge(presence, on=merge_cols).reset_index(drop=True)
         
-    df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x: x <= outlier_thres)
+    df_res['PROTEIN_outlier'] = df_res['padjust'].apply(lambda x: x <= outlier_thres)
     df_res['pvalDistribution'] = pval_dist
 
+    df_res = df_res.rename(columns={"proteinID": "geneID"})
     if not include_all:
         original_len = df_res.shape[0]
         df_res = df_res.query('PROTEIN_outlier==True')
