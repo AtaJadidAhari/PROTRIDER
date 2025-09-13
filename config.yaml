@@ -1,25 +1,32 @@
 # path to output directory to store result files
 out_dir: output
+
+# csv input file containing intensities. Columns are samples and rows are proteins.
+input_intensities: "/s/project/py_outrider/demo_data/drop_demo_counts_all.tsv"
+
 # column name in the input file indicating the column name containing the protein names/IDs
 index_col: "geneID"
+
+# csv file containing sample annotations
+# sample_annotation: sample_data/sample_annotations.tsv
 
 ## Preprocessing params
 # maximum percentage of missing values per protein
 max_allowed_NAs_per_protein: 0.3
 # transformation funtion to apply to the data before model fitting. options are log10, log2, and log
+# set this to null if the data is already log-transformed
 #log_func_name: "log"
 
 analysis: "outrider"
 fpkmCutoff: 1
 ae_loss: "MSE" # or NLL
-
+gtf: "/s/project/py_outrider/demo_data/gencode_annotation_trunc.gtf"
 # names of columns in the sample annotation file to be passed as covariates to the autoencoder.
 # leaving this empty results in no covariates passed to the model
 cov_used:
-#- "gender"
-#- "PROTEOMICS_BATCH"
-#- "BATCH_RUN"
-#- "INSTRUMENT"
+# - SEX
+# - AGE
+# - "BATCH_RUN"
 
 # seed parameter for reproducibility
 seed: 42
@@ -38,7 +45,7 @@ n_epochs: 100 # number of training epochs
 lr: 1e-4 # learning rate
 batch_size:
 
-find_q_method: "OHT" # option to find latent space dimension. Options: OHT, gs
+find_q_method: "OHT" # option to find latent space dimension. Options: OHT, gs or an integer value
 init_pca: True # PCA initialization
 h_dim: # hidden dimension, only for n_layers>1
 
@@ -65,3 +72,4 @@ report_all: True
 
 verbose: False
 device: 'cpu'
+

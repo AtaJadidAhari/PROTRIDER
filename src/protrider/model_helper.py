@@ -4,10 +4,12 @@ import pandas as pd
 from sklearn.metrics import precision_recall_curve, auc
 import torch
 import copy
+from typing import Union
 
 from .stats import get_pvals, fit_residuals
 from .model import ProtriderAutoencoder, train, MSEBCELoss  # masked
-from .datasets import ProtriderSubset
+
+from .datasets import ProtriderSubset, ProtriderDataset, OutriderDataset
 import logging
 
 __all__ = ['init_model', 'find_latent_dim']
@@ -15,7 +17,7 @@ __all__ = ['init_model', 'find_latent_dim']
 logger = logging.getLogger(__name__)
 
 
-def find_latent_dim(dataset, method='OHT',
+def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='OHT',
                     inj_freq=1e-3, inj_mean=3, inj_sd=1.6,
                     init_wPCA=True, n_layers=1, h_dim=None,
                     n_epochs=100, learning_rate=1e-6, batch_size=None,
@@ -23,11 +25,11 @@ def find_latent_dim(dataset, method='OHT',
                     out_dir=None, device=torch.device('cpu'),
                     presence_absence=False, lambda_bce=1.
                     ):
-    if method == "OHT":
+    if method == "OHT" or method == "oht":
         logger.info('OHT method for finding latent dim')
         dataset.perform_svd()
         q = dataset.find_enc_dim_optht()
-    else:
+    elif method == "gs":
         logger.info('Grid search method for finding latent dim')
         logger.info('Injecting outliers')
         inj_freq = float(inj_freq)
@@ -42,17 +44,17 @@ def find_latent_dim(dataset, method='OHT',
             model = init_model(injected_dataset, latent_dim, init_wPCA, n_layers, h_dim, device,
                                presence_absence=presence_absence)
             criterion = MSEBCELoss(presence_absence=presence_absence, lambda_bce=lambda_bce)
-            X_out = model(injected_dataset.X, injected_dataset.torch_mask, cond=injected_dataset.cov_one_hot)
+            X_out = model(injected_dataset.X, injected_dataset.torch_mask, cond=injected_dataset.covariates)
             loss, mse_loss, bce_loss = criterion(X_out, injected_dataset.X, injected_dataset.torch_mask, detached=True)
             logger.info('\tInitial loss after model init: %s, mse_loss: %s, bce_loss: %s',
                         loss, mse_loss, bce_loss)
 
             logger.info('\tFitting model')
-            loss, mse_loss, bce_loss = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
+            loss, mse_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
             logger.info('\tFinal loss after model fit: %s, mse_loss: %s, bce_loss: %s',
                         loss, mse_loss, bce_loss)
             X_out = model(injected_dataset.X, injected_dataset.torch_mask,
-                          cond=injected_dataset.cov_one_hot).detach().cpu().numpy()
+                          cond=injected_dataset.covariates).detach().cpu().numpy()
             if presence_absence:
                 presence_out = X_out[1]
                 X_out = X_out[0]
@@ -63,14 +65,14 @@ def find_latent_dim(dataset, method='OHT',
                 X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
                 X_in[injected_dataset.mask] = np.nan
                 res = X_in - X_out
-                mu, sigma, df0 = fit_residuals(res=res, dis='gaussian')
-                pvals, _ = get_pvals(res=res,
+                mu, sigma, df0 = fit_residuals(X_in - X_out, dis='gaussian')
+                pvals, _ = get_pvals(res,
                                      mu=mu, sigma=sigma, df0=df0,
                                      how=pval_sided,
                                      dis='gaussian',
                                      )
                 auprc = _get_prec_recall(pvals, outlier_mask)
-                logger.info(f"\t==> q = {latent_dim}: AUCPR = {auprc}")
+                logger.info(f"\t==> q = {latent_dim}: AUPRC = {auprc}")
                 gridSearch_results.append([latent_dim, auprc])
 
         df_gs = pd.DataFrame(gridSearch_results, columns=["encod_dim", "aucpr"])
@@ -81,7 +83,9 @@ def find_latent_dim(dataset, method='OHT',
             out_p = f'{out_dir}/grid_search.csv'
             df_gs.to_csv(out_p, header=True, index=True)
             logger.info(f"\t Saved grid_search to {out_p}")
-
+    else:
+        print("Setting q is a fixed user-provided value")
+        q = int(method)
     return q
 
 
@@ -94,7 +98,6 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
                                  presence_absence=presence_absence, model_type=model_type)
     model.dispersion.set_dispersion(model.distribution.init_training(dataset.X)[1])
     model.double().to(device)
-
     if init_wPCA:
         logger.info('\tInitializing model weights with PCA')
         dataset.perform_svd()

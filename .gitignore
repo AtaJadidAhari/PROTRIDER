@@ -1,9 +1,11 @@
 protrider/.ipynb_checkpoints/*
 protrider/__pycache__/*
-*egg-info/*
-__pycache__/*
-.ipynb_checkpoints/*
+**/*egg-info/*
+**/__pycache__/*
+**/.ipynb_checkpoints/*
 protrider-simulation/
 output/*
 logs/*
 build
+.vscode/*
+.pytest_cache/*

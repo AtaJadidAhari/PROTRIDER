@@ -11,34 +11,13 @@ import torch
 import logging
 
 from .utils import Result, ModelInfo, run_experiment, run_experiment_cv
+from . import plots
 
 logger = logging.getLogger(__name__)
 
 
-# @click.group(context_settings=dict(help_option_names=["-h", "--help"]))
-@click.command()
-@click.option(
-    "--config",
-    default='../config.yaml',
-    help="Configuration file containing PROTRIDER custom options",
-    type=click.Path(exists=True, dir_okay=False),
-)
-@click.option(
-    "--input_intensities",
-    help="csv input file containing intensities. Columns are samples and rows are proteins. See example here: FIXME",
-    type=click.Path(exists=True, dir_okay=False),
-)
-@click.option(
-    "--sample_annotation",
-    help="csv file containing sample annotations",
-    type=click.Path(exists=True, dir_okay=False),
-)
-@click.option(
-    "--out_dir",
-    help="Output directory to save results",
-    type=click.Path(exists=False, dir_okay=True, file_okay=False),
-)
-def main(config, input_intensities: str, sample_annotation: str = None, out_dir: str = None) -> None:
+@click.group()
+def cli() -> None:
     """# PROTRIDER
 
     PROTRIDER is a package for calling protein outliers on mass spectrometry data
@@ -48,60 +27,246 @@ def main(config, input_intensities: str, sample_annotation: str = None, out_dir:
     - Official code repository: https://github.com/gagneurlab/PROTRIDER
 
     """
+    pass
 
-    return run(config, input_intensities, sample_annotation, out_dir)
 
+@cli.group(chain=True)
+@click.option(
+    "--config",
+    help="Configuration file containing PROTRIDER custom options",
+    type=click.Path(exists=True, dir_okay=False),
+)
+@click.option(
+    '--plot_title',
+    type=str,
+    default="",
+    help="Title of the plots"
+)
+@click.pass_context
+def plot(ctx, config: str, plot_title: str = ""):
+    """
+    Plot the results of a PROTRIDER run.
+    """
+    if config is None:
+        click.echo('No config file provided. Exiting.')
+        return
 
-def run(config, input_intensities: str, sample_annotation: str = None, out_dir: str = None):
-    ## Load config with params
     config = yaml.load(open(config), Loader=yaml.FullLoader)
-
+    config = defaultdict(lambda: None, config)
     if config['verbose']:
-        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
+        logging.basicConfig(
+            level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
     else:
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
+        logging.basicConfig(
+            level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
+
+    out_dir = config['out_dir']
+    if Path(out_dir).is_dir() is False:
+        click.echo(f'Output directory {out_dir} does not exist. Exiting.')
+        return
+
+    ctx.obj = config
+    ctx.obj['plot_title'] = plot_title
+
+
+@plot.command('all')
+@click.pass_context
+def plot_all(ctx):
+    """
+    Plot all results for a PROTRIDER run.
+    """
+    if ctx.obj is None:
+        return
+    out_dir = ctx.obj['out_dir']
+    plot_title = ctx.obj['plot_title']
+    logger.info("plotting all plots")
+    plots.plot_pvals(out_dir, ctx.obj['pval_dist'], plot_title)
+    plots.plot_aberrant_per_sample(out_dir, plot_title)
+    plots.plot_encoding_dim(out_dir, ctx.obj['find_q_method'], plot_title)
+    plots.plot_training_loss(out_dir, plot_title)
+    plots.plot_correlation_heatmap(
+        out_dir, ctx.obj['sample_annotation'], plot_title, None)
+
+
+@plot.command('pvals')
+@click.pass_context
+def plot_pvals(ctx):
+    """
+    Plot pvalue plots for a PROTRIDER run.
+    """
+    if ctx.obj is None:
+        return
+    out_dir = ctx.obj['out_dir']
+    plot_title = ctx.obj['plot_title']
+    logger.info("plotting pvalue plots")
+    plots.plot_pvals(out_dir, ctx.obj['pval_dist'], plot_title)
+
+
+@plot.command('aberrant_per_sample')
+@click.pass_context
+def plot_aberrant_per_sample(ctx):
+    """
+    Plot number of aberrant proteins per sample for a PROTRIDER run.
+    """
+    if ctx.obj is None:
+        return
+    out_dir = ctx.obj['out_dir']
+    plot_title = ctx.obj['plot_title']
+    logger.info("plotting number of aberrant proteins per sample")
+    plots.plot_aberrant_per_sample(out_dir, plot_title)
+
+
+@plot.command('encoding_dim')
+@click.pass_context
+def plot_encoding_dim(ctx):
+    """
+    Plot encoding dimension search plot for a PROTRIDER run.
+    """
+    if ctx.obj is None:
+        return
+    out_dir = ctx.obj['out_dir']
+    plot_title = ctx.obj['plot_title']
+    logger.info("plotting encoding dimension search plot")
+    plots.plot_encoding_dim(out_dir, ctx.obj['find_q_method'], plot_title)
+
+
+@plot.command('training_loss')
+@click.pass_context
+def plot_training_loss(ctx):
+    """
+    Plot training loss history for a PROTRIDER run.
+    """
+    if ctx.obj is None:
+        return
+    out_dir = ctx.obj['out_dir']
+    plot_title = ctx.obj['plot_title']
+    logger.info("plotting training loss")
+    plots.plot_training_loss(out_dir, plot_title)
+
+
+@plot.command('expected_vs_observed')
+@click.option(
+    '--protein_id',
+    type=str,
+    help="Id of the protein to plot"
+)
+@click.pass_context
+def plot_expected_vs_observed(ctx, protein_id: str):
+    """
+    Plot expected vs observed protein intensity for a PROTRIDER run.
+    """
+    if ctx.obj is None:
+        return
+    if protein_id is None:
+        click.echo(
+            'No protein_id provided for expected vs observed plot. Exiting.')
+        return
+    out_dir = ctx.obj['out_dir']
+    plot_title = ctx.obj['plot_title']
+    logger.info(
+        f"plotting expected vs observed protein intensitiy for protein {protein_id}")
+    plots.plot_expected_vs_observed(out_dir, protein_id, plot_title)
+
+
+@plot.command('correlation_heatmap')
+@click.option(
+    '--covariate',
+    type=str,
+    help="Name of the covariate to color the samples by"
+)
+@click.pass_context
+def plot_correlation_heatmap(ctx, covariate: str):
+    """
+    Plot correlation heatmap for a PROTRIDER run.
+    """
+    if ctx.obj is None:
+        return
+    out_dir = ctx.obj['out_dir']
+    plot_title = ctx.obj['plot_title']
+    logger.info("plotting correlation heatmap")
+    plots.plot_correlation_heatmap(
+        out_dir, ctx.obj['sample_annotation'], plot_title, covariate_name=covariate)
+
+
+@cli.command('run')
+@click.option(
+    "--config",
+    help="Configuration file containing PROTRIDER custom options",
+    type=click.Path(exists=True, dir_okay=False),
+)
+@click.option(
+    "--skip_summary",
+    help="Do not save the summary file.",
+    is_flag=True,
+)
+def run_cli(config: str, skip_summary: bool = False):
+    """Run the PROTRIDER pipeline.
+    """
+    run(config, skip_summary=skip_summary)
+
+
+def run(config: str, skip_summary: bool = False):
+    """Run the PROTRIDER pipeline.
+    """
+    if config is None:
+        click.echo('No config file provided. Exiting.')
+        return
+
+    config = yaml.load(open(config), Loader=yaml.FullLoader)
+    config = defaultdict(lambda: None, config)
+    if config['verbose']:
+        logging.basicConfig(
+            level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
+    else:
+        logging.basicConfig(
+            level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
+
+    input_intensities = config['input_intensities']
+    sample_annotation = config['sample_annotation']
+    out_dir = config['out_dir']
 
     logger.info('Starting protrider')
     logger.info("Config:\n%s", yaml.dump(config, default_flow_style=False))
 
-    config = defaultdict(lambda: None, config)
-
-    if out_dir is not None:
-        config['out_dir'] = out_dir
-
-    if config['out_dir'] is not None:
-        path = Path(config['out_dir'])
-        path.mkdir(parents=True, exist_ok=True)
+    path = Path(out_dir)
+    path.mkdir(parents=True, exist_ok=True)
 
     if config['log_func_name'] == "log2":
         log_func = np.log2
-        base_fn = lambda x: 2 ** x
+
+        def base_fn(x):
+            return 2 ** x
     elif config['log_func_name'] == "log10":
         log_func = np.log10
-        base_fn = lambda x: 10 ** x
+
+        def base_fn(x):
+            return 10 ** x
     elif config['log_func_name'] == 'log':
         log_func = np.log
         base_fn = np.exp
     else:
         if config['log_func_name'] is None:
-            logger.warning('No log function passed for preprocessing. \nAssuming data is already log transformed.')
-            log_func = lambda x: x  # id
+            logger.warning(
+                'No log function passed for preprocessing. \nAssuming data is already log transformed.')
+            log_func = lambda x: x
             base_fn = np.exp
         else:
-            raise ValueError(f"Log func {config['log_func_name']} not supported.")
+            raise ValueError(
+                f"Log func {config['log_func_name']} not supported.")
 
-    ## Catch some errors/inconsistencies
-    if (config['find_q_method'] == 'OHT') and (config['cov_used'] is not None):
-        raise ValueError('OHT not implemented with covariate inclusion yet')
+    if (config['find_q_method'] == 'OHT') and config['cov_used']:
+        logger.warning('OHT has not been evaluated with covariates yet')
 
-    if (config['find_q_method'] == 'OHT') and (config['presence_absence']==True):
-        raise ValueError('OHT not implemented with presence/absence analysis yet')
+    if (config['find_q_method'] == 'OHT') and config['presence_absence']:
+        logger.warning(
+            'OHT has not been evaluated on presence/absence analysis yet')
 
-    #if (config['presence_absence'] == True) and (config['n_layers']!=1):
+    # if (config['presence_absence'] == True) and (config['n_layers']!=1):
     #    raise ValueError('Presence absence inclusion is only with 1-layers models possible')
 
-    device = torch.device("cuda" if ((torch.cuda.is_available()) & (config['device'] == 'gpu')) else "cpu")
-
+    device = torch.device("cuda" if (
+        (torch.cuda.is_available()) & (config['device'] == 'gpu')) else "cpu")
+    
     if config.get('seed', None) is not None:
         logger.info('Setting random seed: %s', config['seed'])
         torch.manual_seed(config['seed'])
@@ -115,17 +280,19 @@ def run(config, input_intensities: str, sample_annotation: str = None, out_dir: 
                                              device=device)
         df_folds = None
 
-    summary = _report_summary(result, config['pval_dist'], config['outlier_threshold'],
-                              config['report_all'])
+    _write_results(result=result, model_info=model_info, out_dir=out_dir,
+                   df_folds=df_folds, config=config)
 
-    if config['out_dir'] is not None:
-        _write_results(summary=summary, result=result, model_info=model_info, out_dir=config['out_dir'],
-                       df_folds=df_folds, config=config)
+    if not skip_summary:
+        summary = _report_summary(result, config['pval_dist'], config['outlier_threshold'],
+                                  config['report_all'])
+        summary_p = f"{out_dir}/protrider_summary.csv"
+        summary.to_csv(summary_p, index=None)
+        logger.info(
+            f'Saved output summary with shape {summary.shape} to <{summary_p}>---')
 
-    return summary
 
-
-def _write_results(summary, result: Result, model_info: ModelInfo, out_dir, config: dict, df_folds: DataFrame = None):
+def _write_results(result: Result, model_info: ModelInfo, out_dir, config: dict, df_folds: DataFrame = None):
     logger.info('=== Saving output ===')
     out_dir = out_dir
 
@@ -153,6 +320,11 @@ def _write_results(summary, result: Result, model_info: ModelInfo, out_dir, conf
     out_p = f'{out_dir}/pvals.csv'
     result.df_pvals.T.to_csv(out_p, header=True, index=True)
     logger.info(f"Saved P-values to {out_p}")
+
+    # left-sided p-values
+    out_p = f'{out_dir}/pvals_one_sided.csv'
+    result.df_pvals_one_sided.T.to_csv(out_p, header=True, index=True)
+    logger.info(f"Saved left-sided P-values to {out_p}")
 
     # p-values adj
     out_p = f'{out_dir}/pvals_adj.csv'
@@ -183,16 +355,28 @@ def _write_results(summary, result: Result, model_info: ModelInfo, out_dir, conf
     # latent space
     # FIXME
 
-    ## TODO check with master branch additional info
+    # TODO check with master branch additional info
 
     # Additional info
     out_p = f'{out_dir}/additional_info.csv'
     model_info_dict = dataclasses.asdict(model_info)
     if model_info.q.ndim == 0:
         # make all variables of model_info arrays
-        model_info_dict = {k: np.array([v]) for k, v in model_info_dict.items()}
+        model_info_dict = {k: np.array([v])
+                           for k, v in model_info_dict.items()}
 
     folds = np.arange(len(model_info_dict['q']))
+    if df_folds is None:
+        train_losses = model_info_dict.pop("train_losses")
+        train_losses_df = pd.DataFrame({
+            'epoch': range(1, len(train_losses[0]) + 1),
+            'train_loss': train_losses[0],
+        })
+        out_p = f'{out_dir}/train_losses.csv'
+        train_losses_df.to_csv(out_p, header=True, index=False)
+        logger.info(f"Saved training losses to {out_p}")
+
+    out_p = f'{out_dir}/additional_info.csv'
     df_info = pd.DataFrame(model_info_dict, index=pd.Index(folds, name='fold'))
     df_info.to_csv(out_p, header=True, index=True)
     logger.info(f"Saved additional input to {out_p}")
@@ -203,11 +387,7 @@ def _write_results(summary, result: Result, model_info: ModelInfo, out_dir, conf
         df_folds.to_csv(out_p, header=True, index=True)
         logger.info(f"Saved folds to {out_p}")
 
-    out_p = f'{out_dir}/protrider_summary.csv'
-    summary.to_csv(out_p, index=None)
-    logger.info(f'Saved output summary with shape {summary.shape} to <{out_p}>---')
-
-
+        
 def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, include_all=False):
     ae_out = result.df_out
     ae_in = result.dataset.data
@@ -252,13 +432,13 @@ def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, inc
               .rename(columns={'value': 'pred_presence_probability'}))
         df_res = df_res.merge(presence, on=merge_cols).reset_index(drop=True)
         
-    df_res['PROTEIN_outlier'] = df_res['padjust'].apply(lambda x: x <= outlier_thres)
+    df_res['aberrant'] = df_res['padjust'].apply(lambda x: x <= outlier_thres)
     df_res['pvalDistribution'] = pval_dist
 
     df_res = df_res.rename(columns={"proteinID": "geneID"})
     if not include_all:
         original_len = df_res.shape[0]
-        df_res = df_res.query('PROTEIN_outlier==True')
+        df_res = df_res.query('aberrant==True')
         logger.info(
             f'\t--- Removing non-significant sample-protein combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
 
@@ -266,4 +446,4 @@ def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, inc
 
 
 if __name__ == '__main__':
-    main()
+    cli(obj={})
