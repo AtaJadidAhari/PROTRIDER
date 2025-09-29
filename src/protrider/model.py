@@ -242,9 +242,9 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
         if running_loss < best_loss:
             best_loss = running_loss
             best_model_wts = copy.deepcopy(model.state_dict())  # save weights
+        train_losses.append(running_loss)
     
     model.load_state_dict(best_model_wts)
-    train_losses.append(running_loss)
     
     return running_loss, running_mse_loss, running_bce_loss, train_losses
 
@@ -312,7 +312,7 @@ class NegativeBinomialLoss(nn.Module):
 
         #dispersion = xhat[0].unsqueeze(0)  # Shape: (1 x genes), broadcast across batch
         dispersion = torch.as_tensor(xhat[0], dtype=x_true.dtype, device=x_true.device).unsqueeze(0)
-        x_pred = xhat[1].T
+        x_pred = xhat[1]
         # Negative log-likelihood for NB per gene (dispersion scalar)
         # Ensure numerical stability with epsilon value
         eps = 1e-10

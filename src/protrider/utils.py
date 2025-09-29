@@ -349,9 +349,17 @@ def run_experiment_cv(input_intensities, config, sample_annotation, log_func, ba
 def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: ProtriderAutoencoder, criterion: MSEBCELoss):
     X_out = model(dataset.X, dataset.torch_mask, cond=dataset.covariates)
 
-    loss, mse_loss, bce_loss = criterion(X_out, dataset.X, dataset.torch_mask, detached=True)
-    df_presence = None
     theta = None
+    if model.model_type == "protrider":
+        loss, reconstruction_loss, bce_loss = criterion(X_out, dataset.X, dataset.torch_mask, detached=True)
+    elif model.model_type == "outrider":
+        _, theta = model.get_dispersion_parameters()
+        loss, reconstruction_loss, bce_loss = criterion(
+            (theta, torch.exp(X_out) * torch.tensor(dataset.size_factors)),
+            dataset.raw_x,
+            detached=True)
+
+    df_presence = None
     if model.presence_absence:
         presence_hat = torch.sigmoid(X_out[1])  # Predicted presence (0–1)
         X_out = X_out[0]  # Predicted intensities
@@ -359,14 +367,12 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
         df_presence = pd.DataFrame(presence_hat.detach().cpu().numpy())
         df_presence.columns = dataset.data.columns
         df_presence.index = dataset.data.index
-    if model.model_type == "outrider":
-        _, theta = model.get_dispersion_parameters()
 
     df_out = pd.DataFrame(X_out.detach().cpu().numpy())
     df_out.columns = dataset.data.columns
     df_out.index = dataset.data.index
 
-    return df_out, theta, df_presence, loss, mse_loss, bce_loss
+    return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
 
 def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn):

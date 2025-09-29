@@ -36,6 +36,11 @@ class PCADataset(ABC):
             self.perform_svd()
 
         q = optht(self.centered_log_data_noNA, sv=self.s, sigma=None)
+
+        if q < 2:
+            logger.warning(f"Optimal latent space dimension is smaller than 2. Check your count matrix and"
+                             "verify that all samples have the expected number of counts\nFor now, the latent space dimension is set to 2.")
+            q = 2
         return q
 
 

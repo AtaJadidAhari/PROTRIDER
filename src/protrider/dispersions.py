@@ -20,8 +20,10 @@ class Dispersion:
         mu_scale = None if self.mu_scale is None else self.mu_scale.detach().cpu().numpy()
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
         return mu_scale, theta
+    
     def set_dispersion(self, theta):
         self.theta = theta
+
     def clip_theta(self, lower=0.01, upper=1000):
         self.theta = torch.clip(self.theta, lower, upper)
 
