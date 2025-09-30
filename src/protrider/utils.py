@@ -114,12 +114,12 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
                        presence_absence=config['presence_absence'] if config['n_layers'] == 1 else False,
                        model_type=config["analysis"]
                        )
-    # TODO: double check the loss
-    if config["ae_loss"] == "MSE":
+                       
+    if config["autoencoder_loss"] == "MSE":
         criterion = MSEBCELoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
-    elif config["ae_loss"] == "NLL":
-        #TODO: check performance in both NBL and MSE loss
+    elif config["autoencoder_loss"] == "NLL":
         criterion = NegativeBinomialLoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
+
     logger.info('Model:\n%s', model)
     logger.info('Device: %s', device)
 
@@ -128,15 +128,15 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
     logger.info('Initial loss after model init: %s, mse loss: %s, bce loss: %s', init_loss, init_mse_loss,
                 init_bce_loss)
 
+    ## 5. Train model, if applicable
     final_loss = 10**4
     train_losses = []
     if config['autoencoder_training']:
         logger.info('Fitting model')
-        ## 5. Train model
         _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config['n_epochs'], learning_rate=float(config['lr']),
               batch_size=config['batch_size'])
-        df_out, theta, df_presence, final_loss, final_mse_loss, final_bce_loss = _inference(dataset, model, criterion)
-        logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_mse_loss, final_bce_loss)
+        df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion)
+        logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_reconstruction_loss, final_bce_loss)
     else:
         final_loss = init_loss
 

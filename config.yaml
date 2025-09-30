@@ -19,8 +19,9 @@ max_allowed_NAs_per_protein: 0.3
 
 analysis: "outrider"
 fpkmCutoff: 1
-ae_loss: "MSE" # or NLL
-gtf: "/s/project/py_outrider/demo_data/gencode_annotation_trunc.gtf"
+# gtf: "/s/genomes/human/hg38/gencode.v34/gencode.v34.annotation.gtf.gz"
+gtf: "/s/project/py_outrider/demo_ae/Data/gencode_annotation_trunc.gtf"
+
 # names of columns in the sample annotation file to be passed as covariates to the autoencoder.
 # leaving this empty results in no covariates passed to the model
 cov_used:
@@ -39,6 +40,7 @@ gs_epochs: 100
 
 ## Model params
 autoencoder_training: False ## when set to false, it returns values after (PCA) initialization without training
+autoencoder_loss: "NLL" # MSE or NLL
 
 n_layers: 1 # number of layers for the autoencoder model
 n_epochs: 100 # number of training epochs

@@ -139,11 +139,11 @@ class ProtriderAutoencoder(nn.Module):
 
 
 def mse_masked(x_hat, x, mask):
-    mse_loss = nn.MSELoss(reduction="none")
-    loss = mse_loss(x_hat, x)
+    reconstruction_loss = nn.MSELoss(reduction="none")
+    loss = reconstruction_loss(x_hat, x)
     masked_loss = torch.where(mask, torch.nan, loss)
-    mse_loss_val = masked_loss.nanmean()
-    return mse_loss_val
+    reconstruction_loss_val = masked_loss.nanmean()
+    return reconstruction_loss_val
 
 
 class MSEBCELoss(nn.Module):
@@ -159,20 +159,20 @@ class MSEBCELoss(nn.Module):
             presence_hat = x_hat[1]  # Predicted presence (0–1)
             x_hat = x_hat[0]  # Predicted intensities
 
-        mse_loss = mse_masked(x_hat, x, mask)
+        reconstruction_loss = mse_masked(x_hat, x, mask)
         if detached:
-            mse_loss = mse_loss.detach().cpu().numpy()
+            reconstruction_loss = reconstruction_loss.detach().cpu().numpy()
 
         if self.presence_absence:
             bce_loss = F.binary_cross_entropy(torch.sigmoid(presence_hat), presence)
             if detached:
                 bce_loss = bce_loss.detach().cpu().numpy()
-            loss = mse_loss + self.lambda_bce * bce_loss
+            loss = reconstruction_loss + self.lambda_bce * bce_loss
         else:
             bce_loss = None
-            loss = mse_loss
+            loss = reconstruction_loss
 
-        return loss, mse_loss, bce_loss
+        return loss, reconstruction_loss, bce_loss
 
 
 
@@ -192,12 +192,12 @@ def train_val(train_subset: ProtriderSubset, val_subset: ProtriderSubset, model,
     train_losses = []
     val_losses = []
     for epoch in tqdm(range(n_epochs)):
-        train_loss, train_mse_loss, train_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
+        train_loss, train_reconstruction_loss, train_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
 
         if epoch % val_every_nepochs == 0:
             train_losses.append(train_loss)
             x_hat_val = model(val_subset.X, val_subset.torch_mask, cond=val_subset.covariates)
-            val_loss, val_mse_loss, val_bce_loss = criterion(x_hat_val, val_subset.X, val_subset.torch_mask)
+            val_loss, val_reconstruction_loss, val_bce_loss = criterion(x_hat_val, val_subset.X, val_subset.torch_mask)
 
             val_losses.append(val_loss.detach().cpu().numpy())
             logger.debug('[%d] train loss: %.6f' % (epoch + 1, train_loss))
@@ -235,9 +235,9 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
     best_loss = 10**9
     train_losses = []
     for epoch in tqdm(range(n_epochs)):
-        running_loss, running_mse_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
-        logger.debug('[%d] loss: %.6f, mse loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
-                                                                          running_mse_loss, running_bce_loss))
+        running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
+        logger.debug('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
+                                                                          running_reconstruction_loss, running_bce_loss))
         scheduler.step()
         if running_loss < best_loss:
             best_loss = running_loss
@@ -246,12 +246,12 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
     
     model.load_state_dict(best_model_wts)
     
-    return running_loss, running_mse_loss, running_bce_loss, train_losses
+    return running_loss, running_reconstruction_loss, running_bce_loss, train_losses
 
 
 def _train_iteration(data_loader, model, criterion, optimizer):
     running_loss = 0.0
-    running_mse_loss = 0.0
+    running_reconstruction_loss = 0.0
     running_bce_loss = 0.0
 
     n_batches = 0
@@ -261,7 +261,7 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         elif model.model_type == "outrider":
             x, mask, cov, prot_means, raw_x, size_factors = data
 
-        # restore grads and compute model out
+        # Restore grads and compute model out
         optimizer.zero_grad()
         x_hat = model(x, mask, cond=cov)
 
