@@ -285,7 +285,7 @@ def run(config: str, skip_summary: bool = False):
 
     if not skip_summary:
         summary = _report_summary(result, config['pval_dist'], config['outlier_threshold'],
-                                  config['report_all'])
+                                  config['report_all'], config['analysis'])
         summary_p = f"{out_dir}/protrider_summary.csv"
         summary.to_csv(summary_p, index=None)
         logger.info(
@@ -388,7 +388,7 @@ def _write_results(result: Result, model_info: ModelInfo, out_dir, config: dict,
         logger.info(f"Saved folds to {out_p}")
 
         
-def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, include_all=False):
+def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, include_all=False, analysis_type="protrider"):
     ae_out = result.df_out
     ae_in = result.dataset.data
     raw_in = result.dataset.raw_data

@@ -202,7 +202,7 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
                                  presence_absence=presence_absence, model_type=model_type)
 
     if model_type == "outrider":
-        model.dispersion.set_dispersion(model.distribution.init_training(dataset.X)[1])
+        model.dispersion.set_dispersion(model.distribution.init_training(dataset.X.T)[1])
 
     model.double().to(device)
     if init_wPCA:
