@@ -25,10 +25,10 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                     out_dir=None, device=torch.device('cpu'),
                     presence_absence=False, lambda_bce=1.
                     ):
+    dataset.perform_svd()
+    q = dataset.find_enc_dim_optht()
     if method == "OHT" or method == "oht":
         logger.info('OHT method for finding latent dim')
-        dataset.perform_svd()
-        q = dataset.find_enc_dim_optht()
     elif method == "gs":
         logger.info('Grid search method for finding latent dim')
         logger.info('Injecting outliers')
@@ -36,7 +36,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         learning_rate = float(learning_rate)
         injected_dataset, outlier_mask = _inject_outliers(dataset, inj_freq, inj_mean, inj_sd, device=device)
 
-        possible_qs = _get_gs_params(dataset.X.shape)
+        possible_qs = _get_gs_params(dataset.X.shape, q)
         logger.info("Starting grid search for optimal encoding dimension")
         gridSearch_results = []
         for latent_dim in possible_qs:
@@ -83,6 +83,119 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
             out_p = f'{out_dir}/grid_search.csv'
             df_gs.to_csv(out_p, header=True, index=True)
             logger.info(f"\t Saved grid_search to {out_p}")
+    elif method == "bs":
+        logger.info('Binary search method for finding latent dim')
+        logger.info('Injecting outliers')
+        inj_freq = float(inj_freq)
+        learning_rate = float(learning_rate)
+        injected_dataset, outlier_mask = _inject_outliers(dataset, inj_freq, inj_mean, inj_sd, device=device)
+        logger.info("Starting binary search for optimal encoding dimension")
+        binarySearch_results =  pd.DataFrame(columns=["encod_dim", "aucpr"])
+        
+        def f(latent_dim):
+            # if q already evaluated, return cached value
+            existing = binarySearch_results.loc[binarySearch_results["encod_dim"] == latent_dim, "aucpr"]
+            if not existing.empty:
+                return existing.iloc[0]
+            logger.info(f"Testing q = {latent_dim}")
+            model = init_model(injected_dataset, latent_dim, init_wPCA, n_layers, h_dim, device,
+                               presence_absence=presence_absence)
+            criterion = MSEBCELoss(presence_absence=presence_absence, lambda_bce=lambda_bce)
+            X_out = model(injected_dataset.X, injected_dataset.torch_mask, cond=injected_dataset.covariates)
+            loss, mse_loss, bce_loss = criterion(X_out, injected_dataset.X, injected_dataset.torch_mask, detached=True)
+            logger.info('\tInitial loss after model init: %s, mse_loss: %s, bce_loss: %s',
+                        loss, mse_loss, bce_loss)
+
+            logger.info('\tFitting model')
+            loss, mse_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
+            logger.info('\tFinal loss after model fit: %s, mse_loss: %s, bce_loss: %s',
+                        loss, mse_loss, bce_loss)
+            X_out = model(injected_dataset.X, injected_dataset.torch_mask,
+                          cond=injected_dataset.covariates).detach().cpu().numpy()
+            if presence_absence:
+                presence_out = X_out[1]
+                X_out = X_out[0]
+
+            if ~np.isfinite(loss):
+                auc_prec_rec = np.nan
+            else:
+                X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
+                X_in[injected_dataset.mask] = np.nan
+                res = X_in - X_out
+                mu, sigma, df0 = fit_residuals(X_in - X_out, dis='gaussian')
+                pvals, _ = get_pvals(res,
+                                     mu=mu, sigma=sigma, df0=df0,
+                                     how=pval_sided,
+                                     dis='gaussian',
+                                     )
+                auprc = _get_prec_recall(pvals, outlier_mask)
+                logger.info(f"\t==> q = {latent_dim}: AUPRC = {auprc}")
+                return auprc
+        
+        
+
+
+        
+        factor = 2
+        max_iters = 6
+        tol=1e-6
+        
+        k_max = injected_dataset.X.shape[1]
+
+        L, M, R = max(1, q // factor), q, int(q * 2.3)
+        fL, fM, fR = f(L), f(M), f(R)
+      
+        binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": L, "aucpr": fL}
+        binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
+        binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": R, "aucpr": fR}
+        
+        best_q, best_f = M, fM
+
+        for it in range(max_iters):
+            print(L, M, R, fL, fM, fR, "prining values....\n\n\n")
+            # update best
+            for q, fv in [(L,fL), (M,fM), (R,fR)]:
+                if fv > best_f:
+                    best_q, best_f = q, fv
+    
+            # Shrink the interval if mid is best
+            if fM >= fL and fM >= fR:
+                if abs(R - L) < 2:
+                    break
+                L = (L + M) // factor
+                fL = f(L)
+                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": L, "aucpr": fL}
+                R = (M + R) // factor
+                fR = f(R)
+                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": R, "aucpr": fR}
+    
+            # otherwise shift toward the better side
+            if fR > fM:
+                #L, fL = R, fR
+                L, fL = M, fM
+                M = M + (R - M) // factor 
+                #M = R + R - M
+                fM = f(M)
+                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
+                #R = R * factor
+                #fR = f(R)
+                #binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": R, "aucpr": fR}
+            else:
+                #R, fR = L, fL
+                R, fR = M, fM
+                #M = L - M + L
+                M = L + (M - L) // factor
+                fM = f(M)
+                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
+                #L = L // factor
+                #fL = f(L)
+                #binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": L, "aucpr": fL}
+        q = best_q
+        if out_dir is not None:
+            out_p = f'{out_dir}/grid_search.csv'
+            binarySearch_results.to_csv(out_p, header=True, index=True)
+            logger.info(f"\t Saved binary search to {out_p}")
+
     else:
         print("Setting q is a fixed user-provided value")
         q = int(method)
@@ -91,12 +204,13 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
 
 def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, device=torch.device('cpu'),
                presence_absence=False, model_type="protrider"):
-    n_cov = dataset.cov_one_hot.shape[1]
+    n_cov = dataset.covariates.shape[1]
     n_prots = dataset.X.shape[1]
     model = ProtriderAutoencoder(in_dim=n_prots, latent_dim=latent_dim, n_layers=n_layer, h_dim=h_dim, n_cov=n_cov,
                                  prot_means=None if init_wPCA else dataset.prot_means_torch,
                                  presence_absence=presence_absence, model_type=model_type)
-    model.dispersion.set_dispersion(model.distribution.init_training(dataset.X)[1])
+    if model_type == "outrider":
+        model.dispersion.set_dispersion(model.distribution.init_training(dataset.X)[1])
     model.double().to(device)
     if init_wPCA:
         logger.info('\tInitializing model weights with PCA')
@@ -106,9 +220,11 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
     return model
 
 
-def _get_gs_params(data_shape, MP=2, a=3, max_steps=30):
+def _get_gs_params(data_shape, oht_q, MP=2, a=3, max_steps=30):
+    print(data_shape)
     b = round(min(data_shape) / MP)
     n_steps = min(max_steps, b)  # do at most 25 steps or N/3
+    a = max(a, oht_q//2)
     par_q = np.unique(np.round(np.exp(np.linspace(start=np.log(a),
                                                   stop=np.log(b),
                                                   num=n_steps))))
