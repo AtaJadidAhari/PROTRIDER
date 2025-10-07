@@ -85,7 +85,7 @@ def plot_all(ctx):
     plots.plot_encoding_dim(out_dir, ctx.obj['find_q_method'], plot_title)
     plots.plot_training_loss(out_dir, plot_title)
     plots.plot_correlation_heatmap(
-        out_dir, ctx.obj['sample_annotation'], plot_title, None)
+        out_dir, ctx.obj['sample_annotation'], ctx.obj['analysis'], plot_title, None)
 
 
 @plot.command('pvals')
@@ -185,7 +185,7 @@ def plot_correlation_heatmap(ctx, covariate: str):
     plot_title = ctx.obj['plot_title']
     logger.info("plotting correlation heatmap")
     plots.plot_correlation_heatmap(
-        out_dir, ctx.obj['sample_annotation'], plot_title, covariate_name=covariate)
+        out_dir, ctx.obj['sample_annotation'], ctx.obj['analysis'], plot_title, covariate_name=covariate)
 
 
 @cli.command('run')
@@ -435,7 +435,8 @@ def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, inc
     df_res['aberrant'] = df_res['padjust'].apply(lambda x: x <= outlier_thres)
     df_res['pvalDistribution'] = pval_dist
 
-    df_res = df_res.rename(columns={"proteinID": "geneID"})
+    if analysis_type == "outrider":
+        df_res = df_res.rename(columns={"proteinID": "geneID"})
     if not include_all:
         original_len = df_res.shape[0]
         df_res = df_res.query('aberrant==True')

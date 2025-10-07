@@ -171,25 +171,16 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
     
             # otherwise shift toward the better side
             if fR > fM:
-                #L, fL = R, fR
                 L, fL = M, fM
                 M = M + (R - M) // factor 
-                #M = R + R - M
                 fM = f(M)
                 binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
-                #R = R * factor
-                #fR = f(R)
-                #binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": R, "aucpr": fR}
             else:
-                #R, fR = L, fL
                 R, fR = M, fM
-                #M = L - M + L
                 M = L + (M - L) // factor
                 fM = f(M)
                 binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
-                #L = L // factor
-                #fL = f(L)
-                #binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": L, "aucpr": fL}
+
         q = best_q
         if out_dir is not None:
             out_p = f'{out_dir}/grid_search.csv'

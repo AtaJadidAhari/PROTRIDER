@@ -72,7 +72,7 @@ def plot_pvals(output_dir, distribution, plot_title="", fontsize=10):
 def plot_encoding_dim(output_dir, find_q_method, plot_title="", oht_q=None, fontsize=10):
     os.makedirs(f"{output_dir}/plots/", exist_ok=True)
  
-    if find_q_method != "gs":
+    if find_q_method not in ["gs", "bs"]:
         print("plot_encoding_dim is not implemented for OHT yet.")
         return
     
@@ -175,18 +175,23 @@ def plot_training_loss(output_dir, plot_title="", fontsize=10):
                width=6, height=4, units='in', dpi=300)
 
 
-def plot_correlation_heatmap(output_dir, sample_annotation_path: str, plot_title="", covariate_name=None, row_centered=True):
+def plot_correlation_heatmap(output_dir, sample_annotation_path: str, analysis="protrider", plot_title="", covariate_name=None, row_centered=True):
     """
     Create a correlation heatmap plot for protein data colored by covariate values.
     
     Args:
         
     """
+    os.makedirs(f"{output_dir}/plots/", exist_ok=True)
     output_dir = Path(output_dir)
-    zscore_data = pd.read_csv(output_dir / 'processed_input.csv').set_index('proteinID')
-    zscore_data = np.log2(zscore_data + 1)
+    if analysis == "protrider":
+        zscore_data = pd.read_csv(output_dir / 'processed_input.csv').set_index('proteinID')
+    elif analysis == "outrider":
+        zscore_data = pd.read_csv(output_dir / 'processed_input.csv').set_index('geneID')
+    # zscore_data = np.log2(zscore_data + 1)
     if row_centered is True:
-        zscore_data = zscore_data.subtract(zscore_data.mean(axis=1), axis=0)
+        row_means = zscore_data.mean(axis=1, skipna=True)
+        zscore_data = zscore_data.sub(row_means, axis=0)
     row_colors = None
     if sample_annotation_path is not None:
         sample_annotation = covariates.read_annotation_file(sample_annotation_path)
@@ -207,10 +212,10 @@ def plot_correlation_heatmap(output_dir, sample_annotation_path: str, plot_title
                 row_colors = [lut[label] for label in covariate_values]
         
     # Calculate correlation matrix
-    corr_matrix = zscore_data.corr(method="pearson")
+    corr_matrix = zscore_data.corr(method="spearman")
     
     # Create clustermap
-    clustermap = sns.clustermap(
+    cm_input = sns.clustermap(
         corr_matrix,
         cmap=sns.diverging_palette(240, 10, as_cmap=True),
         vmin=-1, vmax=1,
@@ -223,25 +228,28 @@ def plot_correlation_heatmap(output_dir, sample_annotation_path: str, plot_title
         from matplotlib.patches import Patch
         legend_elements = [Patch(facecolor=color, label=str(val)) 
                           for val, color in lut.items()]
-        clustermap.ax_col_dendrogram.legend(handles=legend_elements, 
+        cm_input.ax_col_dendrogram.legend(handles=legend_elements, 
                                            title=covariate_name,
                                            bbox_to_anchor=(1.15, 1), 
                                            loc='upper left',
                                            frameon=True)
     
     # Adjust layout
-    plt.setp(clustermap.ax_heatmap.get_xticklabels(), rotation=45, ha='right')
-    plt.setp(clustermap.ax_heatmap.get_yticklabels(), rotation=0)
+    plt.setp(cm_input.ax_heatmap.get_xticklabels(), rotation=45, ha='right')
+    plt.setp(cm_input.ax_heatmap.get_yticklabels(), rotation=0)
     plt.title(plot_title)
     plt.savefig(output_dir / 'plots' / 'correlation_heatmap_input.png', dpi=300, bbox_inches='tight')
-    plt.close()
+    plt.close(cm_input.fig)
     logger.info(f"Saved correlation heatmap to {output_dir / 'plots' / 'correlation_heatmap_input.png'}")
 
-
-    zscore_data = pd.read_csv(output_dir / 'output.csv').set_index('proteinID')
-    zscore_data = np.log2(zscore_data + 1)
+    if analysis == "protrider":
+        zscore_data = pd.read_csv(output_dir / 'zscores.csv').set_index('proteinID')
+    elif analysis == "outrider":
+        zscore_data = pd.read_csv(output_dir / 'output.csv').set_index('geneID')
+    # zscore_data = np.log2(zscore_data + 1)
     if row_centered is True:
-        zscore_data = zscore_data.subtract(zscore_data.mean(axis=1), axis=0)
+        row_means = zscore_data.mean(axis=1, skipna=True)
+        zscore_data = zscore_data.sub(row_means, axis=0)
     row_colors = None
     if sample_annotation_path is not None:
         sample_annotation = covariates.read_annotation_file(sample_annotation_path)
@@ -262,10 +270,10 @@ def plot_correlation_heatmap(output_dir, sample_annotation_path: str, plot_title
                 row_colors = [lut[label] for label in covariate_values]
         
     # Calculate correlation matrix
-    corr_matrix = zscore_data.corr(method="pearson")
+    corr_matrix = zscore_data.corr(method="spearman")
     
     # Create clustermap
-    clustermap = sns.clustermap(
+    cm_output = sns.clustermap(
         corr_matrix,
         # cmap='mako',
         vmin=-1, vmax=1,
@@ -279,18 +287,18 @@ def plot_correlation_heatmap(output_dir, sample_annotation_path: str, plot_title
         from matplotlib.patches import Patch
         legend_elements = [Patch(facecolor=color, label=str(val)) 
                           for val, color in lut.items()]
-        clustermap.ax_col_dendrogram.legend(handles=legend_elements, 
+        cm_output.ax_col_dendrogram.legend(handles=legend_elements, 
                                            title=covariate_name,
                                            bbox_to_anchor=(1.15, 1), 
                                            loc='upper left',
                                            frameon=True)
     
     # Adjust layout
-    plt.setp(clustermap.ax_heatmap.get_xticklabels(), rotation=45, ha='right')
-    plt.setp(clustermap.ax_heatmap.get_yticklabels(), rotation=0)
+    plt.setp(cm_output.ax_heatmap.get_xticklabels(), rotation=45, ha='right')
+    plt.setp(cm_output.ax_heatmap.get_yticklabels(), rotation=0)
     plt.title(plot_title)
-    plt.savefig(output_dir / 'plots' / 'correlation_heatmap_output.png', dpi=300, bbox_inches='tight')
-    plt.close()
+    cm_output.fig.savefig(output_dir / 'plots' / 'correlation_heatmap_output.png', dpi=300, bbox_inches='tight')
+    plt.close(cm_output.fig)
     logger.info(f"Saved correlation heatmap to {output_dir / 'plots' / 'correlation_heatmap_output.png'}")
 
 def plot_cv_loss(train_losses, val_losses, fold, out_dir):
