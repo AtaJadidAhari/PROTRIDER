@@ -1,14 +1,15 @@
 import copy
 
 import torch
+from torch.special import gammaln
 import torch.nn as nn
+import torch.nn.functional as F
+
 from tqdm import tqdm
 import math
 import numpy as np
 import logging
-import torch.nn.functional as F
 from .dispersions import Dispersion, NegativeBinomialDistribution
-from scipy.special import gammaln, digamma
 
 from .datasets import ProtriderSubset
 
@@ -97,6 +98,9 @@ class ProtriderAutoencoder(nn.Module):
         z = self.encoder(x, cond=cond)
         out = self.decoder(z, cond=cond)
 
+        if self.model_type == "outrider":
+            out = torch.clip(out, -700, 700)
+
         return out
 
     def initialize_wPCA(self, Vt_q, prot_means, n_cov=0):
@@ -139,11 +143,11 @@ class ProtriderAutoencoder(nn.Module):
 
 
 def mse_masked(x_hat, x, mask):
-    mse_loss = nn.MSELoss(reduction="none")
-    loss = mse_loss(x_hat, x)
+    reconstruction_loss = nn.MSELoss(reduction="none")
+    loss = reconstruction_loss(x_hat, x)
     masked_loss = torch.where(mask, torch.nan, loss)
-    mse_loss_val = masked_loss.nanmean()
-    return mse_loss_val
+    reconstruction_loss_val = masked_loss.nanmean()
+    return reconstruction_loss_val
 
 
 class MSEBCELoss(nn.Module):
@@ -159,20 +163,20 @@ class MSEBCELoss(nn.Module):
             presence_hat = x_hat[1]  # Predicted presence (0–1)
             x_hat = x_hat[0]  # Predicted intensities
 
-        mse_loss = mse_masked(x_hat, x, mask)
+        reconstruction_loss = mse_masked(x_hat, x, mask)
         if detached:
-            mse_loss = mse_loss.detach().cpu().numpy()
+            reconstruction_loss = reconstruction_loss.detach().cpu().numpy()
 
         if self.presence_absence:
             bce_loss = F.binary_cross_entropy(torch.sigmoid(presence_hat), presence)
             if detached:
                 bce_loss = bce_loss.detach().cpu().numpy()
-            loss = mse_loss + self.lambda_bce * bce_loss
+            loss = reconstruction_loss + self.lambda_bce * bce_loss
         else:
             bce_loss = None
-            loss = mse_loss
+            loss = reconstruction_loss
 
-        return loss, mse_loss, bce_loss
+        return loss, reconstruction_loss, bce_loss
 
 
 
@@ -192,12 +196,12 @@ def train_val(train_subset: ProtriderSubset, val_subset: ProtriderSubset, model,
     train_losses = []
     val_losses = []
     for epoch in tqdm(range(n_epochs)):
-        train_loss, train_mse_loss, train_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
+        train_loss, train_reconstruction_loss, train_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
 
         if epoch % val_every_nepochs == 0:
             train_losses.append(train_loss)
             x_hat_val = model(val_subset.X, val_subset.torch_mask, cond=val_subset.covariates)
-            val_loss, val_mse_loss, val_bce_loss = criterion(x_hat_val, val_subset.X, val_subset.torch_mask)
+            val_loss, val_reconstruction_loss, val_bce_loss = criterion(x_hat_val, val_subset.X, val_subset.torch_mask)
 
             val_losses.append(val_loss.detach().cpu().numpy())
             logger.debug('[%d] train loss: %.6f' % (epoch + 1, train_loss))
@@ -235,23 +239,23 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
     best_loss = 10**9
     train_losses = []
     for epoch in tqdm(range(n_epochs)):
-        running_loss, running_mse_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
-        logger.debug('[%d] loss: %.6f, mse loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
-                                                                          running_mse_loss, running_bce_loss))
+        running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
+        logger.debug('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
+                                                                          running_reconstruction_loss, running_bce_loss))
         scheduler.step()
         if running_loss < best_loss:
             best_loss = running_loss
             best_model_wts = copy.deepcopy(model.state_dict())  # save weights
+        train_losses.append(running_loss)
     
     model.load_state_dict(best_model_wts)
-    train_losses.append(running_loss)
     
-    return running_loss, running_mse_loss, running_bce_loss, train_losses
+    return running_loss, running_reconstruction_loss, running_bce_loss, train_losses
 
 
 def _train_iteration(data_loader, model, criterion, optimizer):
     running_loss = 0.0
-    running_mse_loss = 0.0
+    running_reconstruction_loss = 0.0
     running_bce_loss = 0.0
 
     n_batches = 0
@@ -261,39 +265,39 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         elif model.model_type == "outrider":
             x, mask, cov, prot_means, raw_x, size_factors = data
 
-        # restore grads and compute model out
+        # Restore grads and compute model out
         optimizer.zero_grad()
         x_hat = model(x, mask, cond=cov)
 
-        # if model.model_type == "outrider":
-        #     print(batch_idx, "calling loss from here")
-        #     mu_scale, theta = model.get_dispersion_parameters()
-        #     x_hat = torch.clip(x_hat, -700, 700)
-        #     loss, mse_loss, bce_loss = criterion((theta, torch.exp(x_hat) * size_factors), raw_x.T, mask)
-        # elif model.model_type == "protrider": # should be based on loss, and not model_type
-        #     loss, mse_loss, bce_loss = criterion(x_hat*size_factors, raw_x, mask)
-        loss, mse_loss, bce_loss = criterion(x_hat, x, mask)
- 
+        # Calculate loss
+        if model.model_type == "outrider":
+            _, theta = model.get_dispersion_parameters()
+
+            x_pred = torch.exp(x_hat) * size_factors
+            loss, reconstruction_loss, bce_loss = criterion((theta, x_pred), raw_x, mask)
+        elif model.model_type == "protrider":
+            loss, reconstruction_loss, bce_loss = criterion(x_hat, x, mask) 
 
         # Adjust learning weights
         loss.backward()
         optimizer.step()
 
         # Update dispersions in OUTRIDER model
-        # if model.model_type == "outrider":
-        #     x_hat = torch.clip(x_hat, -700, 700)
-        #     x_hat = torch.exp(x_hat.detach().cpu()) * size_factors
-        #     model.fit_dispersion(raw_x.T, x_hat.T)
-        #     model.dispersion.clip_theta()
+        if model.model_type == "outrider":
+            with torch.no_grad():
+                # Fit dispersions using Scipy optimizer
+                x_pred = torch.exp(x_hat) * size_factors
+                model.fit_dispersion(raw_x.T, x_pred.T)
+                model.dispersion.clip_theta()
+
         # Gather data and report
         running_loss += loss.item()
-        running_mse_loss += mse_loss.item()
+        running_reconstruction_loss += reconstruction_loss.item()
         running_bce_loss += bce_loss.item() if bce_loss is not None else 0
         n_batches += 1
 
-    return running_loss / n_batches, running_mse_loss / n_batches, running_bce_loss / n_batches
+    return running_loss / n_batches, running_reconstruction_loss / n_batches, running_bce_loss / n_batches
 
-# TODO: remove this and use the distribution.loss from dispersions.py
 class NegativeBinomialLoss(nn.Module):
     def __init__(self, presence_absence=False, lambda_bce=1.0, eps=1e-8):
         super().__init__()
@@ -301,51 +305,57 @@ class NegativeBinomialLoss(nn.Module):
         self.lambda_bce = lambda_bce
         self.eps = eps
 
-    def forward(self, xhat, x_true, mask=None, detached=False):
+    def forward(self, predictions, x_true, mask=None, detached=False):
         """
-        mu: predicted mean (batch_size x genes)
-        k: observed counts (batch_size x genes)
-        theta: dispersion (genes,) — must be 1D
-        mask: optional mask (same shape as k), with 0 to ignore entries
-        detached: if True, return .detach().cpu().numpy() versions
+        predictions: tuple of (theta, x_pred) where:
+            - theta: dispersion parameters (genes,) 
+            - x_pred: predicted counts (batch_size x genes)
+        x_true: observed counts (batch_size x genes)
+        mask: optional mask
         """
 
-        #dispersion = xhat[0].unsqueeze(0)  # Shape: (1 x genes), broadcast across batch
-        dispersion = torch.as_tensor(xhat[0], dtype=x_true.dtype, device=x_true.device).unsqueeze(0)
-        x_pred = xhat[1].T
-        # Negative log-likelihood for NB per gene (dispersion scalar)
-        # Ensure numerical stability with epsilon value
+        if isinstance(predictions, tuple):
+            theta, x_pred = predictions
+        else:
+            raise ValueError("Theta must be provided for NB loss")
+        
+        if not isinstance(theta, torch.Tensor):
+            theta = torch.tensor(theta, dtype=torch.float64, device=x_true.device)
+        
+        # Ensure theta has the right shape (1, genes) for broadcasting
+        if theta.dim() == 1:
+            theta = theta.unsqueeze(0)
+        
+        # Compute NB negative log-likelihood per gene
         eps = 1e-10
-        r = torch.clamp(dispersion, min=eps)
+        r = torch.clamp(theta, min=eps)
         mu = torch.clamp(x_pred, min=eps)
         
-        # NB log PMF terms
-        # gammaln(x + r) - gammaln(r) - gammaln(x+1) + r * ln(r/(r+mu)) + x * ln(mu/(r+mu))
-        term1 = torch.special.gammaln(x_true + r) - torch.special.gammaln(r) - torch.special.gammaln(x_true + 1)
+        term1 = gammaln(x_true + r) - gammaln(r) - gammaln(x_true + 1)
         term2 = r * torch.log(r / (r + mu))
         term3 = x_true * torch.log(mu / (r + mu))
         log_prob = term1 + term2 + term3
         
-        nll =  -log_prob.sum()
-        # print(nll, "loss")
-
         if mask is not None:
-            nll = nll * mask
-            nb_loss = nll.sum() / mask.sum()
+            log_prob = torch.where(mask, torch.tensor(0.0, device=log_prob.device), log_prob)
+            nll = -log_prob.sum() / (~mask).sum()
         else:
-            nb_loss = nll.mean()
-
-        # --- BCE Loss (if applicable) ---
+            nll = -log_prob.mean()
+        
+        # Handle presence/absence if needed
         if self.presence_absence:
+            presence = (~mask).double()
+            presence_hat = x_pred[1]
+            x_pred = x_pred[0]
             bce_loss = F.binary_cross_entropy(torch.sigmoid(presence_hat), presence)
-            loss = nb_loss + self.lambda_bce * bce_loss
+            loss = nll + self.lambda_bce * bce_loss
         else:
             bce_loss = None
-            loss = nb_loss
+            loss = nll
 
         if detached:
             return (loss.detach().cpu().numpy(),
-                    nb_loss.detach().cpu().numpy(),
+                    nll.detach().cpu().numpy(),
                     bce_loss.detach().cpu().numpy() if bce_loss is not None else None)
-
-        return loss, nb_loss, bce_loss
+            
+        return loss, nll, bce_loss

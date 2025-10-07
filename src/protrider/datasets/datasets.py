@@ -36,6 +36,11 @@ class PCADataset(ABC):
             self.perform_svd()
 
         q = optht(self.centered_log_data_noNA, sv=self.s, sigma=None)
+
+        if q < 2:
+            logger.warning(f"Optimal latent space dimension is smaller than 2. Check your count matrix and"
+                             "verify that all samples have the expected number of counts\nFor now, the latent space dimension is set to 2.")
+            q = 2
         return q
 
 
@@ -219,11 +224,8 @@ class OutriderDataset(Dataset, PCADataset):
 
         ## to torch
         self.X = torch.tensor(self.X)
-
-        ## to torch
         self.raw_x = torch.tensor(self.raw_filtered.values)
 
-        # self.X_target = self.X ### needed for outlier injection
         self.mask = np.array(self.mask.values)
         self.torch_mask = torch.tensor(self.mask)
         self.prot_means_torch = torch.from_numpy(self.prot_means).squeeze(0)
@@ -266,6 +268,7 @@ class OutriderDataset(Dataset, PCADataset):
             self.covariates = torch.empty(self.X.shape[0], 0)
             self.cov_one_hot = torch.empty(self.X.shape[0], 0)
         logger.info(f'Finished reading covariates. No. one-hot-encoded covariates used: {self.cov_one_hot.shape[1]}')
+
         ### Send data to cpu/gpu device
         self.X = self.X.to(device)
         self.torch_mask = self.torch_mask.to(device)

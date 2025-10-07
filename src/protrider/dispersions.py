@@ -20,8 +20,10 @@ class Dispersion:
         mu_scale = None if self.mu_scale is None else self.mu_scale.detach().cpu().numpy()
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
         return mu_scale, theta
+    
     def set_dispersion(self, theta):
         self.theta = theta
+
     def clip_theta(self, lower=0.01, upper=1000):
         self.theta = torch.clip(self.theta, lower, upper)
 
@@ -120,19 +122,3 @@ class NegativeBinomialDistribution:
             theta = torch.tensor(1.0, dtype=torch.float64)
 
         return mu_scale, theta
-    
-    # def loss(self, dispersion, x_true, x_pred):
-    #     # Negative log-likelihood for NB per gene (dispersion scalar)
-    #     # Ensure numerical stability with epsilon value
-    #     eps = 1e-10
-    #     r = torch.clamp(dispersion, min=eps)
-    #     mu = torch.clamp(x_pred, min=eps)
-        
-    #     # NB log PMF terms
-    #     # gammaln(x + r) - gammaln(r) - gammaln(x+1) + r * ln(r/(r+mu)) + x * ln(mu/(r+mu))
-    #     term1 = gammaln(x_true + r) - gammaln(r) - gammaln(x_true + 1)
-    #     term2 = r * torch.log(r / (r + mu))
-    #     term3 = x_true * torch.log(mu / (r + mu))
-    #     log_prob = term1 + term2 + term3
-        
-    #     return -log_prob.sum()

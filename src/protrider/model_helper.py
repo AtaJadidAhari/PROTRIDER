@@ -209,8 +209,10 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
     model = ProtriderAutoencoder(in_dim=n_prots, latent_dim=latent_dim, n_layers=n_layer, h_dim=h_dim, n_cov=n_cov,
                                  prot_means=None if init_wPCA else dataset.prot_means_torch,
                                  presence_absence=presence_absence, model_type=model_type)
+
     if model_type == "outrider":
         model.dispersion.set_dispersion(model.distribution.init_training(dataset.X)[1])
+
     model.double().to(device)
     if init_wPCA:
         logger.info('\tInitializing model weights with PCA')
