@@ -10,12 +10,13 @@ logger = logging.getLogger(__name__)
 
 __all__ = ['parse_covariates']
 
-def parse_covariates(sa_file, cov_used) -> tuple[np.ndarray, np.ndarray]:
+def parse_covariates(sa_file, cov_used, index_order) -> tuple[np.ndarray, np.ndarray]:
     """Parse covariates from sample annotation file.
     
     Args:
         sa_file: Path to sample annotation file (CSV or TSV)
         cov_used: List of covariate column names to use
+        index_order: Order of samples in intensity matrix (pd.Index)
         
     Returns:
         tuple: (covariates, centered_covariates_noNA)
@@ -30,6 +31,9 @@ def parse_covariates(sa_file, cov_used) -> tuple[np.ndarray, np.ndarray]:
     # Read sample annotation file
     sample_anno = read_annotation_file(sa_file)
     logger.info(f'Finished reading sample annotation with shape: {sample_anno.shape}')
+    
+    # Sort sa based on intensity sample orders
+    sample_anno = sort_sa_file(sample_anno, index_order)
     
     # Process covariates
     processed_covariates = _process_covariates(sample_anno[cov_used])
@@ -54,6 +58,60 @@ def read_annotation_file(sa_file):
     else:
         raise ValueError(f"Unsupported file type: {file_extension}")
 
+
+def sort_sa_file(sample_anno: pd.DataFrame, index_order: pd.Index) -> pd.DataFrame:
+    """
+    Sort a sample annotation DataFrame based on intensity matrix sample order
+    
+    Args:
+        sample_anno : The DataFrame to be sorted. (pd.DataFrame)
+        index_order : Order of the intensity matrix indices. (pd.Index)
+    
+    Returns
+    -------
+    pd.DataFrame
+        The sorted sample_annotation DataFrame.
+    
+    Raises
+    ------
+    ValueError
+        If the lengths of `sample_anno` and `index_order` do not match,
+        or if the indices in `index_order` do not match those in `sample_anno`.
+    """
+    sample_anno.index = sample_anno.sampleID
+    sample_anno.index.names = ["index"]
+    index_list = list(index_order)
+
+    # Basic checks
+    if 'sampleID' not in sample_anno.columns:
+        raise ValueError("sample_anno must contain a 'sampleID' column.")
+      
+    # Restrict to only samples in intentisy file
+    sample_anno = sample_anno[sample_anno["sampleID"].isin(index_list)]
+    
+    # Check length
+    if len(sample_anno) != len(index_order):
+        raise ValueError(
+            f"Length mismatch: sample_anno has {len(sample_anno)} rows, "
+            f"but index_order has {len(index_order)} entries."
+        )
+    
+    # Check if all indices match
+    if not set(sample_anno.index) == set(index_list):
+        raise ValueError("Indices in index_order do not match sample_anno.index.")
+    # Create an order DataFrame with explicit positions (keeps duplicates and order)
+    order_df = pd.DataFrame({'sampleID': index_list, '__order_pos': range(len(index_list))})
+
+    # Merge then sort by the position; using inner join because we've already validated multisets
+    merged = pd.merge(order_df, sample_anno, on='sampleID', how='left')
+
+    merged_sorted = merged.sort_values('__order_pos', kind='stable').drop(columns='__order_pos')
+
+    # Set index to the requested order (index_list) so the returned DF index matches index_order exactly
+    merged_sorted.index = index_list
+     
+    return merged_sorted
+    
 
 def _is_numeric_dtype(dtype):
     """Check if pandas dtype is numeric."""

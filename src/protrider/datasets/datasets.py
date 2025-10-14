@@ -15,6 +15,7 @@ import pandas as pd
 import numpy as np
 import re
 from pathlib import Path
+import torch.nn.functional as F
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ class ProtriderDataset(Dataset, PCADataset):
         # Read and preprocess covariates
         if sa_file is not None and cov_used is not None:
             try:
-                self.covariates, self.centered_covariates_noNA = parse_covariates(sa_file, cov_used)
+                self.covariates, self.centered_covariates_noNA = parse_covariates(sa_file, cov_used, self.data.index)
                 self.covariates = torch.from_numpy(self.covariates)
                 self.centered_covariates_noNA = torch.from_numpy(self.centered_covariates_noNA)
             except ValueError:
@@ -230,49 +231,25 @@ class OutriderDataset(Dataset, PCADataset):
         self.torch_mask = torch.tensor(self.mask)
         self.prot_means_torch = torch.from_numpy(self.prot_means).squeeze(0)
 
-        # sample annotation including covariates
-        if sa_file is not None:
-            sa_file_extension = Path(sa_file).suffix
-            if sa_file_extension == '.csv':
-                sample_anno = pd.read_csv(sa_file)
-            elif sa_file_extension == '.tsv':
-                sample_anno = pd.read_csv(sa_file, sep="\t")
-            else:
-                raise ValueError(f"Unsupported file type: {sa_file_extension}")
-            logger.info(f'Finished reading sample annotation with shape: {sample_anno.shape}')
+        # Read and preprocess covariates
+        if sa_file is not None and cov_used is not None:
+            try:
+                self.covariates, self.centered_covariates_noNA = parse_covariates(sa_file, cov_used, self.data.index)
+                self.covariates = torch.from_numpy(self.covariates)
+                self.centered_covariates_noNA = torch.from_numpy(self.centered_covariates_noNA)
+            except ValueError as e:
+                print(e)
+                logger.warning("No valid covariates found after parsing.")
+                self.covariates = torch.empty(self.data.shape[0], 0)
+                self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
         else:
-            cov_used = None
-
-        if cov_used is not None:
-            self.covariates = sample_anno.loc[:, cov_used]
-            num_types = ["float64", "float32", "float16",
-                         "complex64", "complex128", "int64",
-                         "int32", "int16", "int8", "uint8"]
-            for col in self.covariates.columns:
-                if self.covariates.loc[:, col].dtype not in num_types:
-                    self.covariates[col] = pd.factorize(self.covariates[col])[0]
-                    self.covariates[col] = np.where(self.covariates[col] < 0,
-                                                    np.max(self.covariates[col]) + 1,
-                                                    self.covariates[col])
-            self.covariates = torch.tensor(self.covariates.values)
-
-            # one_hot encoding of covariates
-            for col in range(self.covariates.shape[1]):
-                one_hot_col = F.one_hot(self.covariates[:, col], num_classes=self.covariates[:, col].max().numpy() + 1)
-                try:
-                    one_hot = torch.cat((one_hot, one_hot_col), dim=1)
-                except:
-                    one_hot = one_hot_col
-            self.cov_one_hot = one_hot
-        else:
-            self.covariates = torch.empty(self.X.shape[0], 0)
-            self.cov_one_hot = torch.empty(self.X.shape[0], 0)
-        logger.info(f'Finished reading covariates. No. one-hot-encoded covariates used: {self.cov_one_hot.shape[1]}')
+            self.covariates = torch.empty(self.data.shape[0], 0)
+            self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
 
         ### Send data to cpu/gpu device
         self.X = self.X.to(device)
         self.torch_mask = self.torch_mask.to(device)
-        self.cov_one_hot = self.cov_one_hot.to(device)
+        self.covariates = self.covariates.to(device)
         self.prot_means_torch = self.prot_means_torch.to(device)
         # self.presence = (~self.torch_mask).long()
 
@@ -280,7 +257,7 @@ class OutriderDataset(Dataset, PCADataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        return (self.X[idx], self.torch_mask[idx], self.cov_one_hot[idx], self.prot_means_torch, self.raw_x[idx], torch.tensor(self.size_factors)[idx])
+        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.prot_means_torch, self.raw_x[idx], torch.tensor(self.size_factors)[idx])
 
     def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentage=0.05):
         """
