@@ -1,10 +1,6 @@
 import torch
-# from torch.special import gammaln, digamma
-import pandas as pd
-import scipy.optimize as sopt
-import numpy as np
-from scipy.special import gammaln, digamma
-from joblib import Parallel, delayed
+import torch.optim as optim
+import torch.nn as nn
 
 from .estimate_theta_robust_moments import estimate_theta_robust_moments
 
@@ -27,98 +23,94 @@ class Dispersion:
     def clip_theta(self, lower=0.01, upper=1000):
         self.theta = torch.clip(self.theta, lower, upper)
 
-    # TODO: make fit paralel, i.e. not n_parallel=1, but vectorize everything
-    # TODO: maybe using torch.vmap ? https://docs.pytorch.org/docs/stable/generated/torch.vmap.html
-    def fit(self, x_true, x_pred, n_parallel=1):
+    def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01, device=None):
         """
         x_true, x_pred: torch.Tensor, shape (genes, samples)
         """
-        genes = x_true.shape[0]
-        theta_fitted = torch.empty(genes, dtype=torch.float64)
-        mu_scale_fitted = torch.empty(genes, dtype=torch.float64)
 
-        results = Parallel(n_jobs=-1, prefer="threads")(delayed(self._fit_gene)(x_true=x_true[gene_index], x_pred=x_pred[gene_index]) for gene_index in range(genes))
+        x_true = x_true.to(dtype=torch.float64, device=device)
+        x_pred = x_pred.to(dtype=torch.float64, device=device)
+        
+        mu_scale_init, theta_init = self.distribution.init_fit(x_true, x_pred)
+        
+        # Reparameterization using exp, since LBFGS does not consider bounds:
+        # where theta = exp(p_theta) + lower_bound
+        # This ensures parameters >= lower_bound
+        # Use min=1e-8 to avoid log(0)
+        p_theta_init = torch.log(torch.clamp(theta_init - lower_bound, min=1e-8))
+        p_mu_scale_init = torch.log(torch.clamp(mu_scale_init - lower_bound, min=1e-8))
 
-        for idx, (mu_val, theta_val) in enumerate(results):
-            mu_scale_fitted[idx] = mu_val
-            theta_fitted[idx] = theta_val
-        # for gene_index in range(genes):
-        #     mu_scale_fitted[gene_index], theta_fitted[gene_index] = self._fit_gene(x_true=x_true[gene_index], x_pred=x_pred[gene_index])
+        p_theta = nn.Parameter(p_theta_init.to(device))
+        p_mu_scale = nn.Parameter(p_mu_scale_init.to(device))
 
-        self.theta = theta_fitted
-        self.mu_scale = mu_scale_fitted
-
-        # print("storing values after fitting")
-        # out_theta_path = "./intermediate_results/theta.csv"
-        # out_mu_scale_path = "./intermediate_results/mu_scale.csv"
-        # pd.DataFrame(self.theta.detach().cpu().numpy()).to_csv(out_theta_path, header=False, index=False)
-        # pd.DataFrame(self.mu_scale.detach().cpu().numpy()).to_csv(out_mu_scale_path, header=False, index=False)
-
-    def _fit_gene(self, x_true, x_pred, max_iter=100, lower_bound=1e-2):
-        mu_scale_init, theta_init = self.distribution.init_fitting(x_true, x_pred)
-        x_true_np = x_true.detach().cpu().numpy()
-        x_pred_np = x_pred.detach().cpu().numpy()
-
-        def nll(params):
-            theta, mu_scale = params
-            theta = max(theta, lower_bound)
-            mu_scale = max(mu_scale, lower_bound)
-            mu = x_pred_np * mu_scale
-
-            term1 = gammaln(x_true_np + theta) - gammaln(theta) - gammaln(x_true_np + 1)
-            term2 = theta * np.log(theta / (theta + mu))
-            term3 = x_true_np * np.log(mu / (theta + mu))
-            log_prob = term1 + term2 + term3
-            return -log_prob.sum()
-
-        def grad_nll(params):
-            theta, mu_scale = params
-            theta = max(theta, lower_bound)
-            mu_scale = max(mu_scale, lower_bound)
-            mu = x_pred_np * mu_scale
-
-            grad_theta = np.sum(
-                np.log(mu + theta) - np.log(theta) - 1 +
-                (x_true_np + theta) / (theta + mu) -
-                digamma(x_true_np + theta) + digamma(theta)
-            )
-            grad_mu_scale = -theta / mu_scale * np.sum((x_true_np - mu) / (theta + mu))
-
-            return np.array([grad_theta, grad_mu_scale])
-
-        res = sopt.minimize(
-            nll,
-            x0=[theta_init.item(), mu_scale_init.item()],
-            method='L-BFGS-B',
-            jac=grad_nll,
-            bounds=[(lower_bound, None), (lower_bound, None)],
-            options={
-                'maxiter': max_iter,
-                'ftol': 2.2e-9,
-                'gtol': 0,
-                'maxcor': 5,
-                'eps': 1e-3
-            }
+        optimizer = optim.LBFGS(
+            [p_theta, p_mu_scale],
+            max_iter=max_iter,
+            history_size=5,
+            tolerance_change=2.2e-9,
+            line_search_fn="strong_wolfe"
         )
-        theta_final, mu_scale_final = res.x
-        return torch.tensor(mu_scale_final, dtype=torch.float64), torch.tensor(theta_final, dtype=torch.float64)
+
+        def closure():
+            optimizer.zero_grad()
+            
+            # Transform parameters (shape [genes])
+            theta = torch.exp(p_theta) + lower_bound
+            mu_scale = torch.exp(p_mu_scale) + lower_bound
+            
+            # Unsqueeze to [genes, 1] for broadcasting against data [genes, samples]
+            theta = theta.unsqueeze(1)
+            mu_scale = mu_scale.unsqueeze(1)
+
+            # Calculate loss and backpropagate
+            mu = x_pred * mu_scale
+            loss = self.distribution.loss(x_true, theta, mu)
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+
+        self.theta = (torch.exp(p_theta) + lower_bound).detach().cpu()
+        self.mu_scale = (torch.exp(p_mu_scale) + lower_bound).detach().cpu()
+
 
 class NegativeBinomialDistribution:
-    def init_training(self, x_true):
+    def init_train(self, x_true, theta_min=0.01, theta_max=1000.0):
         """Initialize theta and mu for training: theta robust moments"""
-        theta = estimate_theta_robust_moments(x_true=x_true.T, theta_min=1e-2, theta_max=1e3)
+        theta = estimate_theta_robust_moments(x_true=x_true.T, theta_min=theta_min, theta_max=theta_max)
         mu_scale = None
         return mu_scale, theta
 
-    def init_fitting(self, x_true, size_factors):
-        """Initialize theta and mu for fitting: theta is dispersion, mu_scale the mean"""
-        normalized = x_true / size_factors
-        mu_scale = normalized.mean()
-        var = normalized.var()
+    def init_fit(self, x_true, size_factors, epsilon=1e-8, theta_min=0.01, theta_max=1000.0, mu_min=0.01):
+        """
+        Initialize theta and mu for fitting: theta is dispersion, mu_scale the mean
+        x_true, size_factors: torch.Tensor, shape (genes, samples)
+        """
+        x_true = x_true.to(torch.float64)
+        size_factors = size_factors.to(torch.float64)
+        normalized = x_true / (size_factors + epsilon)
+        
+        # Calculate mean and var per gene (dim=1)
+        mu_scale = normalized.mean(dim=1)
+        var = normalized.var(dim=1)
 
-        if var > mu_scale:
-            theta = mu_scale**2 / (var - mu_scale)
-        else:
-            theta = torch.tensor(1.0, dtype=torch.float64)
+        theta = mu_scale**2 / (var - mu_scale + epsilon)
 
+        # Set fallback for genes where var <= mu_scale or theta is invalid
+        fallback_mask = (var <= mu_scale) | (theta <= 0) | torch.isnan(theta)
+        theta[fallback_mask] = 1.0
+        
+        theta = torch.clamp(theta, theta_min, theta_max)
+        mu_scale = torch.clamp(mu_scale, min=mu_min)
         return mu_scale, theta
+
+    def loss(self, x_true, theta, mu):
+        term_lgamma = torch.lgamma(x_true + theta) - torch.lgamma(theta) - torch.lgamma(x_true + 1)
+        term_t_log_t = torch.xlogy(theta, theta)
+        term_x_log_m = torch.xlogy(x_true, mu)
+        term_tx_log_tm = torch.xlogy(x_true + theta, theta + mu)
+        
+        log_prob = term_lgamma + term_t_log_t + term_x_log_m - term_tx_log_tm
+        log_prob = torch.nan_to_num(log_prob, nan=0.0, posinf=0.0, neginf=-1e20)
+        loss = -torch.sum(log_prob)
+        return loss
