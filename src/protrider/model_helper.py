@@ -7,7 +7,7 @@ import copy
 from typing import Union
 
 from .stats import get_pvals, fit_residuals
-from .model import ProtriderAutoencoder, train, MSEBCELoss  # masked
+from .model import ProtriderAutoencoder, train, MSEBCELoss, NegativeBinomialLoss  # masked
 
 from .datasets import ProtriderSubset, ProtriderDataset, OutriderDataset
 import logging
@@ -23,10 +23,85 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                     n_epochs=100, learning_rate=1e-6, batch_size=None,
                     pval_sided='two-sided', pval_dist='gaussian',
                     out_dir=None, device=torch.device('cpu'),
-                    presence_absence=False, lambda_bce=1.
+                    presence_absence=False, lambda_bce=1.,
+                    model_type='protrider', loss_fn="MSE"
                     ):
     dataset.perform_svd()
     q = dataset.find_enc_dim_optht()
+    enc_search_results =  pd.DataFrame(columns=["encod_dim", "aucpr"])
+
+    
+    def train_and_eval_q(latent_dim):
+        # if q already evaluated, return cached value
+        existing = enc_search_results.loc[enc_search_results["encod_dim"] == latent_dim, "aucpr"]
+        if not existing.empty:
+            return existing.iloc[0]
+        logger.info(f"Testing q = {latent_dim}")
+        model = init_model(injected_dataset, latent_dim, init_wPCA, n_layers, h_dim, device,
+                           presence_absence=presence_absence, model_type=model_type)
+        if loss_fn == "MSE":
+            criterion = MSEBCELoss(presence_absence=presence_absence, lambda_bce=lambda_bce)
+        elif loss_fn == "NLL":
+            criterion = NegativeBinomialLoss(presence_absence=presence_absence, lambda_bce=lambda_bce)
+        X_out = model(injected_dataset.X, injected_dataset.torch_mask, cond=injected_dataset.covariates)
+        theta = None
+        if model.model_type == "protrider":
+            loss, reconstruction_loss, bce_loss = criterion(X_out, injected_dataset.X, injected_dataset.torch_mask, detached=True)
+        elif model.model_type == "outrider":
+            _, theta = model.get_dispersion_parameters()
+            loss, reconstruction_loss, bce_loss = criterion(
+                (theta, torch.exp(X_out) * torch.tensor(dataset.size_factors)),
+                dataset.raw_x,
+                detached=True)
+        logger.info(f'\tInitial loss after model init: %s, {loss_fn}_loss: %s, bce_loss: %s',
+                    loss, reconstruction_loss, bce_loss)
+
+        logger.info('\tFitting model')
+        
+        loss, reconstruction_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
+        logger.info(f'\tFinal loss after model fit: %s, {loss_fn}_loss: %s, bce_loss: %s',
+                    loss, reconstruction_loss, bce_loss)
+        X_out = model(injected_dataset.X, injected_dataset.torch_mask,
+                      cond=injected_dataset.covariates).detach().cpu().numpy()
+        if presence_absence:
+            presence_out = X_out[1]
+            X_out = X_out[0]
+
+        if ~np.isfinite(loss):
+            auc_prec_rec = np.nan
+        else:
+            X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
+            X_in[injected_dataset.mask] = np.nan
+            if model.model_type == "protrider":
+                res = X_in - X_out
+                mu, sigma, df0 = fit_residuals(res=res.values, x_true=injected_dataset.raw_filtered.values, dis='gaussian')
+            elif model.model_type == "outrider":
+                df_out_clamped = np.clip(X_out, -700, 700)
+                df_res = np.exp(df_out_clamped) * dataset.size_factors
+                df_out = df_res
+                sigma = None
+                df0 = None
+        
+                mu, theta = model.get_dispersion_parameters()
+        
+                if mu is None:
+                    # Fitting NB for outrider if it is not set yet
+                    model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
+                    mu, theta = model.get_dispersion_parameters()
+            
+            pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
+                                 res=df_res.values,
+                                 mu=mu,
+                                 sigma=sigma,
+                                 theta=theta,
+                                 df0=df0,
+                                 how=config['pval_sided'],
+                                 dis=config['pval_dist'])
+
+            auprc = _get_prec_recall(pvals, outlier_mask)
+            logger.info(f"\t==> q = {latent_dim}: AUPRC = {auprc}")
+        return auprc
+    
     if method == "OHT" or method == "oht":
         logger.info('OHT method for finding latent dim')
     elif method == "gs":
@@ -38,50 +113,16 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
 
         possible_qs = _get_gs_params(dataset.X.shape, q)
         logger.info("Starting grid search for optimal encoding dimension")
-        gridSearch_results = []
         for latent_dim in possible_qs:
             logger.info(f"Testing q = {latent_dim}")
-            model = init_model(injected_dataset, latent_dim, init_wPCA, n_layers, h_dim, device,
-                               presence_absence=presence_absence)
-            criterion = MSEBCELoss(presence_absence=presence_absence, lambda_bce=lambda_bce)
-            X_out = model(injected_dataset.X, injected_dataset.torch_mask, cond=injected_dataset.covariates)
-            loss, mse_loss, bce_loss = criterion(X_out, injected_dataset.X, injected_dataset.torch_mask, detached=True)
-            logger.info('\tInitial loss after model init: %s, mse_loss: %s, bce_loss: %s',
-                        loss, mse_loss, bce_loss)
+            auprc = train_and_eval_q(latent_dim)
 
-            logger.info('\tFitting model')
-            loss, mse_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
-            logger.info('\tFinal loss after model fit: %s, mse_loss: %s, bce_loss: %s',
-                        loss, mse_loss, bce_loss)
-            X_out = model(injected_dataset.X, injected_dataset.torch_mask,
-                          cond=injected_dataset.covariates).detach().cpu().numpy()
-            if presence_absence:
-                presence_out = X_out[1]
-                X_out = X_out[0]
-
-            if ~np.isfinite(loss):
-                auc_prec_rec = np.nan
-            else:
-                X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
-                X_in[injected_dataset.mask] = np.nan
-                res = X_in - X_out
-                mu, sigma, df0 = fit_residuals(X_in - X_out, dis='gaussian')
-                pvals, _ = get_pvals(res,
-                                     mu=mu, sigma=sigma, df0=df0,
-                                     how=pval_sided,
-                                     dis='gaussian',
-                                     )
-                auprc = _get_prec_recall(pvals, outlier_mask)
-                logger.info(f"\t==> q = {latent_dim}: AUPRC = {auprc}")
-                gridSearch_results.append([latent_dim, auprc])
-
-        df_gs = pd.DataFrame(gridSearch_results, columns=["encod_dim", "aucpr"])
-        q = int(df_gs.loc[df_gs['aucpr'].idxmax()]['encod_dim'])
+        q = int(enc_search_results.loc[enc_search_results['aucpr'].idxmax()]['encod_dim'])
         logger.info(f'Finished grid search. Optimal encoding dimension = {q}.')
 
         if out_dir is not None:
             out_p = f'{out_dir}/grid_search.csv'
-            df_gs.to_csv(out_p, header=True, index=True)
+            enc_search_results.to_csv(out_p, header=True, index=True)
             logger.info(f"\t Saved grid_search to {out_p}")
     elif method == "bs":
         logger.info('Binary search method for finding latent dim')
@@ -90,69 +131,23 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         learning_rate = float(learning_rate)
         injected_dataset, outlier_mask = _inject_outliers(dataset, inj_freq, inj_mean, inj_sd, device=device)
         logger.info("Starting binary search for optimal encoding dimension")
-        binarySearch_results =  pd.DataFrame(columns=["encod_dim", "aucpr"])
-        
-        def f(latent_dim):
-            # if q already evaluated, return cached value
-            existing = binarySearch_results.loc[binarySearch_results["encod_dim"] == latent_dim, "aucpr"]
-            if not existing.empty:
-                return existing.iloc[0]
-            logger.info(f"Testing q = {latent_dim}")
-            model = init_model(injected_dataset, latent_dim, init_wPCA, n_layers, h_dim, device,
-                               presence_absence=presence_absence)
-            criterion = MSEBCELoss(presence_absence=presence_absence, lambda_bce=lambda_bce)
-            X_out = model(injected_dataset.X, injected_dataset.torch_mask, cond=injected_dataset.covariates)
-            loss, mse_loss, bce_loss = criterion(X_out, injected_dataset.X, injected_dataset.torch_mask, detached=True)
-            logger.info('\tInitial loss after model init: %s, mse_loss: %s, bce_loss: %s',
-                        loss, mse_loss, bce_loss)
 
-            logger.info('\tFitting model')
-            loss, mse_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
-            logger.info('\tFinal loss after model fit: %s, mse_loss: %s, bce_loss: %s',
-                        loss, mse_loss, bce_loss)
-            X_out = model(injected_dataset.X, injected_dataset.torch_mask,
-                          cond=injected_dataset.covariates).detach().cpu().numpy()
-            if presence_absence:
-                presence_out = X_out[1]
-                X_out = X_out[0]
-
-            if ~np.isfinite(loss):
-                auc_prec_rec = np.nan
-            else:
-                X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
-                X_in[injected_dataset.mask] = np.nan
-                res = X_in - X_out
-                mu, sigma, df0 = fit_residuals(X_in - X_out, dis='gaussian')
-                pvals, _ = get_pvals(res,
-                                     mu=mu, sigma=sigma, df0=df0,
-                                     how=pval_sided,
-                                     dis='gaussian',
-                                     )
-                auprc = _get_prec_recall(pvals, outlier_mask)
-                logger.info(f"\t==> q = {latent_dim}: AUPRC = {auprc}")
-                return auprc
-        
-        
-
-
-        
         factor = 2
         max_iters = 6
         tol=1e-6
         
         k_max = injected_dataset.X.shape[1]
 
-        L, M, R = max(1, q // factor), q, int(q * 2.3)
-        fL, fM, fR = f(L), f(M), f(R)
+        L, M, R = max(1, q // factor), q, int(q * 3)
+        fL, fM, fR = train_and_eval_q(L), train_and_eval_q(M), train_and_eval_q(R)
       
-        binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": L, "aucpr": fL}
-        binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
-        binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": R, "aucpr": fR}
+        enc_search_results.loc[len(enc_search_results)] = {"encod_dim": L, "aucpr": fL}
+        enc_search_results.loc[len(enc_search_results)] = {"encod_dim": M, "aucpr": fM}
+        enc_search_results.loc[len(enc_search_results)] = {"encod_dim": R, "aucpr": fR}
         
         best_q, best_f = M, fM
 
         for it in range(max_iters):
-            print(L, M, R, fL, fM, fR, "prining values....\n\n\n")
             # update best
             for q, fv in [(L,fL), (M,fM), (R,fR)]:
                 if fv > best_f:
@@ -163,28 +158,28 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                 if abs(R - L) < 2:
                     break
                 L = (L + M) // factor
-                fL = f(L)
-                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": L, "aucpr": fL}
+                fL = train_and_eval_q(L)
+                enc_search_results.loc[len(enc_search_results)] = {"encod_dim": L, "aucpr": fL}
                 R = (M + R) // factor
-                fR = f(R)
-                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": R, "aucpr": fR}
+                fR = train_and_eval_q(R)
+                enc_search_results.loc[len(enc_search_results)] = {"encod_dim": R, "aucpr": fR}
     
             # otherwise shift toward the better side
             if fR > fM:
                 L, fL = M, fM
                 M = M + (R - M) // factor 
-                fM = f(M)
-                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
+                fM = train_and_eval_q(M)
+                enc_search_results.loc[len(enc_search_results)] = {"encod_dim": M, "aucpr": fM}
             else:
                 R, fR = M, fM
                 M = L + (M - L) // factor
-                fM = f(M)
-                binarySearch_results.loc[len(binarySearch_results)] = {"encod_dim": M, "aucpr": fM}
+                fM = train_and_eval_q(M)
+                enc_search_results.loc[len(enc_search_results)] = {"encod_dim": M, "aucpr": fM}
 
         q = best_q
         if out_dir is not None:
             out_p = f'{out_dir}/grid_search.csv'
-            binarySearch_results.to_csv(out_p, header=True, index=True)
+            enc_search_results.to_csv(out_p, header=True, index=True)
             logger.info(f"\t Saved binary search to {out_p}")
 
     else:
@@ -229,7 +224,7 @@ def _rlnorm(size, inj_mean, inj_sd):
     return np.random.lognormal(mean=log_mean, sigma=np.log(inj_sd), size=size)
 
 
-def _inject_outliers(dataset, inj_freq=1e-3, inj_mean=3, inj_sd=1.6, device=torch.device('cpu')):
+def _inject_outliers(dataset, inj_freq=1e-3, inj_mean=3, inj_sd=1.6, device=torch.device('cpu'), size_factors=None):
     max_outlier_value = np.nanmin([100 * np.nanmax(dataset.X.detach().cpu().numpy()),
                                    torch.finfo(dataset.X.dtype).max])
     logger.info('max value %s', max_outlier_value)
