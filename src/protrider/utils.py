@@ -100,7 +100,9 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
                         out_dir=config['out_dir'],
                         device=device,
                         presence_absence=config['presence_absence'],
-                        lambda_bce=config['lambda_presence_absence']
+                        lambda_bce=config['lambda_presence_absence'],
+                        model_type=config['analysis'],
+                        loss_fn=config['autoencoder_loss']
                         )
 
     logger.info(f'Latent dimension found with method {config["find_q_method"]}: {q}')
@@ -112,12 +114,12 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
                        h_dim=config['h_dim'],
                        device=device,
                        presence_absence=config['presence_absence'] if config['n_layers'] == 1 else False,
-                       model_type=config["analysis"]
+                       model_type=config['analysis']
                        )
                        
-    if config["autoencoder_loss"] == "MSE":
+    if config['autoencoder_loss'] == "MSE":
         criterion = MSEBCELoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
-    elif config["autoencoder_loss"] == "NLL":
+    elif config['autoencoder_loss'] == "NLL":
         criterion = NegativeBinomialLoss(presence_absence=config['presence_absence'], lambda_bce=config['lambda_presence_absence'])
 
     logger.info('Model:\n%s', model)
