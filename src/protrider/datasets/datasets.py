@@ -251,13 +251,15 @@ class OutriderDataset(Dataset, PCADataset):
         self.torch_mask = self.torch_mask.to(device)
         self.covariates = self.covariates.to(device)
         self.prot_means_torch = self.prot_means_torch.to(device)
+        self.raw_x = self.raw_x.to(device)
+        self.size_factors = torch.tensor(self.size_factors).to(device)
         # self.presence = (~self.torch_mask).long()
 
     def __len__(self):
         return len(self.X)
 
     def __getitem__(self, idx):
-        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.prot_means_torch, self.raw_x[idx], torch.tensor(self.size_factors)[idx])
+        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.prot_means_torch, self.raw_x[idx], self.size_factors[idx])
 
     def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentage=0.05):
         """

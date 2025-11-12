@@ -149,7 +149,7 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
         mu, sigma, df0 = fit_residuals(res=df_res.values, x_true=dataset.raw_filtered.values, dis=config['pval_dist'])
     elif config["analysis"] == "outrider":
         df_out_clamped = np.clip(df_out, -700, 700)
-        df_res = np.exp(df_out_clamped) * dataset.size_factors
+        df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
         df_out = df_res
         sigma = None
         df0 = None
