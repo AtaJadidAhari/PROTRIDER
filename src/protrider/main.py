@@ -221,7 +221,7 @@ def run(config: str, skip_summary: bool = False):
         logging.basicConfig(
             level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
 
-    input_intensities = config['input_intensities']
+    input_intensities = config.get("input_intensities", [])
     sample_annotation = config['sample_annotation']
     out_dir = config['out_dir']
 

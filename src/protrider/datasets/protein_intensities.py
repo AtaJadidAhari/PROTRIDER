@@ -10,18 +10,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 def read_protein_intensities(input_intensities, index_col):
-    # read csv
-    suffixes = Path(input_intensities).suffixes
-    compression = None
-    if suffixes[-1] == '.gz':
-        compression = 'gzip'
-        suffixes = suffixes[:-1]
-    if suffixes[-1] == '.csv':
-        data = pd.read_csv(input_intensities, compression=compression).set_index(index_col)
-    elif suffixes[-1] == '.tsv':
-        data = pd.read_csv(input_intensities, sep='\t', compression=compression).set_index(index_col)
-    else:
-        raise ValueError(f"Unsupported file type: {suffixes[-1]}")
+    # read csvs
+    intensities = []
+    for input_intensity in input_intensities:
+        suffixes = Path(input_intensity).suffixes
+        compression = None
+        if suffixes[-1] == '.gz':
+            compression = 'gzip'
+            suffixes = suffixes[:-1]
+        if suffixes[-1] == '.csv':
+            temp_data = pd.read_csv(input_intensity, compression=compression).set_index(index_col)
+        elif suffixes[-1] == '.tsv':
+            temp_data = pd.read_csv(input_intensity, sep='\t', compression=compression).set_index(index_col)
+        else:
+            raise ValueError(f"Unsupported file type: {suffixes[-1]}")
+        intensities.append(temp_data)
+    data = pd.concat(intensities, axis=1)
     data = data.T
     data.index.names = ['sampleID']
     data.columns.name = 'proteinID'
