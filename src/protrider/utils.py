@@ -126,7 +126,7 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
     logger.info('Device: %s', device)
 
     ## 4. Compute initial loss
-    df_out, theta, df_presence, init_loss, init_mse_loss, init_bce_loss = _inference(dataset, model, criterion)
+    df_out, theta, df_presence, init_loss, init_mse_loss, init_bce_loss = _inference(dataset, model, criterion, batch_size=config['batch_size'])
     logger.info('Initial loss after model init: %s, mse loss: %s, bce loss: %s', init_loss, init_mse_loss,
                 init_bce_loss)
 
@@ -137,7 +137,7 @@ def run_experiment(input_intensities, config, sample_annotation, log_func, base_
         logger.info('Fitting model')
         _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config['n_epochs'], learning_rate=float(config['lr']),
               batch_size=config['batch_size'])
-        df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion)
+        df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion, batch_size=config['batch_size'])
         logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_reconstruction_loss, final_bce_loss)
     else:
         final_loss = init_loss
@@ -348,31 +348,72 @@ def run_experiment_cv(input_intensities, config, sample_annotation, log_func, ba
     return result, model_info, df_folds
 
 
-def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: ProtriderAutoencoder, criterion: MSEBCELoss):
-    X_out = model(dataset.X, dataset.torch_mask, cond=dataset.covariates)
+def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: ProtriderAutoencoder, criterion: MSEBCELoss, batch_size=None, use_cpu=True):
 
-    theta = None
-    if model.model_type == "protrider":
-        loss, reconstruction_loss, bce_loss = criterion(X_out, dataset.X, dataset.torch_mask, detached=True)
-    elif model.model_type == "outrider":
-        _, theta = model.get_dispersion_parameters()
-        loss, reconstruction_loss, bce_loss = criterion(
-            (theta, torch.exp(X_out) * torch.tensor(dataset.size_factors)),
-            dataset.raw_x,
-            detached=True)
+    # Save original device
+    orig_device = next(model.parameters()).device
 
-    df_presence = None
-    if model.presence_absence:
-        presence_hat = torch.sigmoid(X_out[1])  # Predicted presence (0–1)
-        X_out = X_out[0]  # Predicted intensities
+    # Move model to CPU if requested
+    if use_cpu:
+        model = model.to("cpu")
 
-        df_presence = pd.DataFrame(presence_hat.detach().cpu().numpy())
-        df_presence.columns = dataset.data.columns
-        df_presence.index = dataset.data.index
+    # Extract tensors
+    X = dataset.X
+    mask = dataset.torch_mask
+    cov = dataset.covariates
+    raw_x = getattr(dataset, "raw_x", None)
 
-    df_out = pd.DataFrame(X_out.detach().cpu().numpy())
-    df_out.columns = dataset.data.columns
-    df_out.index = dataset.data.index
+    # Move tensors to appropriate device (CPU or original GPU)
+    device = "cpu" if use_cpu else orig_device
+    X = X.to(device)
+    mask = mask.to(device)
+    if cov is not None:
+        cov = cov.to(device)
+    if raw_x is not None:
+        raw_x = raw_x.to(device)
+
+    model.eval()
+    with torch.no_grad():
+
+        if model.model_type == "protrider":
+            X_out = model(X, mask, cond=cov)
+            loss, reconstruction_loss, bce_loss = criterion(
+                X_out, X, mask, detached=True
+            )
+            theta = None
+
+        elif model.model_type == "outrider":
+            X_out = model(X, mask, cond=cov)
+
+            _, theta = model.get_dispersion_parameters()
+            loss, reconstruction_loss, bce_loss = criterion(
+                (theta, torch.exp(X_out) * torch.tensor(dataset.size_factors, device=device)),
+                raw_x,
+                detached=True
+            )
+
+        # Presence/Absence extension
+        df_presence = None
+        if model.presence_absence:
+            presence_hat = torch.sigmoid(X_out[1])
+            X_out = X_out[0]
+
+            df_presence = pd.DataFrame(
+                presence_hat.detach().cpu().numpy(),
+                index=dataset.data.index,
+                columns=dataset.data.columns
+            )
+
+        # Output intensities
+        df_out = pd.DataFrame(
+            X_out.detach().cpu().numpy(),
+            index=dataset.data.index,
+            columns=dataset.data.columns
+        )
+
+    # Restore model back to original device
+    if use_cpu:
+        model = model.to(orig_device)
 
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
