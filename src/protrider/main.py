@@ -288,8 +288,8 @@ def run(config: str, skip_summary: bool = False):
     if not skip_summary:
         summary = _report_summary(result, config['pval_dist'], config['outlier_threshold'],
                                   config['report_all'], config['analysis'])
-        summary_p = f"{out_dir}/protrider_summary.csv"
-        summary.to_csv(summary_p, index=None)
+        summary_p = f"{out_dir}/protrider_summary.csv.gz"
+        summary.to_csv(summary_p, index=None, compression='gzip')
         logger.info(
             f'Saved output summary with shape {summary.shape} to <{summary_p}>---')
 
@@ -444,6 +444,8 @@ def _report_summary(result: Result, pval_dist='gaussian', outlier_thres=0.1, inc
         df_res = df_res.query('aberrant==True')
         logger.info(
             f'\t--- Removing non-significant sample-protein combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
+
+    df_res = df_res.sort_values("pValue")
 
     return df_res
 
