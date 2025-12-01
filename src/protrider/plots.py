@@ -5,6 +5,7 @@ import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
+from matplotlib.patches import Patch
 from pathlib import Path
 from .datasets import covariates
 
@@ -175,6 +176,71 @@ def plot_training_loss(output_dir, plot_title="", fontsize=10):
                width=6, height=4, units='in', dpi=300)
 
 
+def _plot_correlation_heatmap(data, output_dir, sample_annotation_path, analysis, plot_title, covariate_name, row_centered, is_input):
+    row_colors = None
+    if sample_annotation_path is not None:
+        sample_annotation = covariates.read_annotation_file(sample_annotation_path)
+        # Get covariate values for coloring
+        if covariate_name is not None:
+            if covariate_name not in sample_annotation.columns:
+                raise ValueError(f"Covariate '{covariate_name}' not found in sample annotation.")
+            covariate_values = sample_annotation[covariate_name]
+            
+            # Create a lookup table for coloring rows
+            # Use a larger color palette to support more unique covariate values
+            unique_vals = covariate_values.unique()
+            if len(unique_vals) > 20:
+                logger.warning(f"Covariate '{covariate_name}' has more than 20 unique values. Skipping color annotation.")
+            else:
+                palette = sns.color_palette("tab20", len(unique_vals))
+                lut = dict(zip(unique_vals, palette))
+                row_colors = [lut[label] for label in covariate_values]
+    
+    # Create clustermap
+    corr_matrix = _calculate_correlation_matrix(data, analysis, row_centered)
+    cluster_map = sns.clustermap(
+        corr_matrix,
+        cmap=sns.diverging_palette(240, 10, as_cmap=True),
+        vmin=-1,
+        vmax=1,
+        row_colors=None if not row_colors else row_colors,
+    )
+    
+    # Add legend for row colors if they exist
+    if row_colors is not None and covariate_name is not None:
+        # Create legend patches
+        legend_elements = [Patch(facecolor=color, label=str(val)) 
+                          for val, color in lut.items()]
+        cluster_map.ax_col_dendrogram.legend(handles=legend_elements, 
+                                           title=covariate_name,
+                                           bbox_to_anchor=(1.15, 1), 
+                                           loc='upper left',
+                                           frameon=True)
+    
+    # Adjust layout
+    file_suffix = "input" if is_input else "output"
+    plt.setp(cluster_map.ax_heatmap.get_xticklabels(), rotation=45, ha='right')
+    plt.setp(cluster_map.ax_heatmap.get_yticklabels(), rotation=0)
+    plt.title(plot_title)
+    plt.savefig(f"{output_dir}/plots/correlation_heatmap_{file_suffix}.png", dpi=300, bbox_inches='tight')
+    plt.close(cluster_map.fig)
+    logger.info(f"Saved correlation heatmap to {output_dir}/plots/correlation_heatmap_{file_suffix}.png")
+
+def _center_data(data):
+    row_means = data.mean(axis=1, skipna=True)
+    return data.sub(row_means, axis=0)
+
+def _calculate_correlation_matrix(data, analysis, row_centered):
+    if analysis == "outrider":
+        # TODO: test with log1p instead of log2
+        data = np.log2(data + 1)
+
+    if row_centered is True:
+        data = _center_data(data)
+        
+    data = data.corr(method="spearman")
+    return data
+
 def plot_correlation_heatmap(output_dir, sample_annotation_path: str, analysis="protrider", plot_title="", covariate_name=None, row_centered=True):
     """
     Create a correlation heatmap plot for protein data colored by covariate values.
@@ -184,122 +250,20 @@ def plot_correlation_heatmap(output_dir, sample_annotation_path: str, analysis="
     """
     os.makedirs(f"{output_dir}/plots/", exist_ok=True)
     output_dir = Path(output_dir)
-    if analysis == "protrider":
-        zscore_data = pd.read_csv(output_dir / 'processed_input.csv').set_index('proteinID')
-    elif analysis == "outrider":
-        zscore_data = pd.read_csv(output_dir / 'processed_input.csv').set_index('geneID')
-    # zscore_data = np.log2(zscore_data + 1)
-    if row_centered is True:
-        row_means = zscore_data.mean(axis=1, skipna=True)
-        zscore_data = zscore_data.sub(row_means, axis=0)
-    row_colors = None
-    if sample_annotation_path is not None:
-        sample_annotation = covariates.read_annotation_file(sample_annotation_path)
-        # Get covariate values for coloring
-        if covariate_name is not None:
-            if covariate_name not in sample_annotation.columns:
-                raise ValueError(f"Covariate '{covariate_name}' not found in sample annotation.")
-            covariate_values = sample_annotation[covariate_name]
-            
-            # Create a lookup table for coloring rows
-            # Use a larger color palette to support more unique covariate values
-            unique_vals = covariate_values.unique()
-            if len(unique_vals) > 20:
-                logger.warning(f"Covariate '{covariate_name}' has more than 20 unique values. Skipping color annotation.")
-            else:
-                palette = sns.color_palette("tab20", len(unique_vals))
-                lut = dict(zip(unique_vals, palette))
-                row_colors = [lut[label] for label in covariate_values]
-        
-    # Calculate correlation matrix
-    corr_matrix = zscore_data.corr(method="spearman")
-    
-    # Create clustermap
-    cm_input = sns.clustermap(
-        corr_matrix,
-        cmap=sns.diverging_palette(240, 10, as_cmap=True),
-        vmin=-1, vmax=1,
-        row_colors=None if not row_colors else row_colors,
-    )
-    
-    # Add legend for row colors if they exist
-    if row_colors is not None and covariate_name is not None:
-        # Create legend patches
-        from matplotlib.patches import Patch
-        legend_elements = [Patch(facecolor=color, label=str(val)) 
-                          for val, color in lut.items()]
-        cm_input.ax_col_dendrogram.legend(handles=legend_elements, 
-                                           title=covariate_name,
-                                           bbox_to_anchor=(1.15, 1), 
-                                           loc='upper left',
-                                           frameon=True)
-    
-    # Adjust layout
-    plt.setp(cm_input.ax_heatmap.get_xticklabels(), rotation=45, ha='right')
-    plt.setp(cm_input.ax_heatmap.get_yticklabels(), rotation=0)
-    plt.title(plot_title)
-    plt.savefig(output_dir / 'plots' / 'correlation_heatmap_input.png', dpi=300, bbox_inches='tight')
-    plt.close(cm_input.fig)
-    logger.info(f"Saved correlation heatmap to {output_dir / 'plots' / 'correlation_heatmap_input.png'}")
 
     if analysis == "protrider":
-        zscore_data = pd.read_csv(output_dir / 'zscores.csv').set_index('proteinID')
+        input_data = pd.read_csv(f"{output_dir}/processed_input.csv").set_index('proteinID')
+        output_data = pd.read_csv(f"{output_dir}/zscores.csv").set_index('proteinID')
     elif analysis == "outrider":
-        zscore_data = pd.read_csv(output_dir / 'output.csv').set_index('geneID')
-    # zscore_data = np.log2(zscore_data + 1)
-    if row_centered is True:
-        row_means = zscore_data.mean(axis=1, skipna=True)
-        zscore_data = zscore_data.sub(row_means, axis=0)
-    row_colors = None
-    if sample_annotation_path is not None:
-        sample_annotation = covariates.read_annotation_file(sample_annotation_path)
-        # Get covariate values for coloring
-        if covariate_name is not None:
-            if covariate_name not in sample_annotation.columns:
-                raise ValueError(f"Covariate '{covariate_name}' not found in sample annotation.")
-            covariate_values = sample_annotation[covariate_name]
-            
-            # Create a lookup table for coloring rows
-            # Use a larger color palette to support more unique covariate values
-            unique_vals = covariate_values.unique()
-            if len(unique_vals) > 20:
-                logger.warning(f"Covariate '{covariate_name}' has more than 20 unique values. Skipping color annotation.")
-            else:
-                palette = sns.color_palette("tab20", len(unique_vals))
-                lut = dict(zip(unique_vals, palette))
-                row_colors = [lut[label] for label in covariate_values]
-        
-    # Calculate correlation matrix
-    corr_matrix = zscore_data.corr(method="spearman")
+        # TODO: change to geneID once fixed
+        input_data = pd.read_csv(f"{output_dir}/processed_input.csv").set_index('proteinID')
+        output_data = pd.read_csv(f"{output_dir}/output.csv").set_index('proteinID')
     
-    # Create clustermap
-    cm_output = sns.clustermap(
-        corr_matrix,
-        # cmap='mako',
-        vmin=-1, vmax=1,
-        cmap=sns.diverging_palette(240, 10, as_cmap=True),
-        row_colors=None if not row_colors else row_colors,
-    )
-    
-    # Add legend for row colors if they exist
-    if row_colors is not None and covariate_name is not None:
-        # Create legend patches
-        from matplotlib.patches import Patch
-        legend_elements = [Patch(facecolor=color, label=str(val)) 
-                          for val, color in lut.items()]
-        cm_output.ax_col_dendrogram.legend(handles=legend_elements, 
-                                           title=covariate_name,
-                                           bbox_to_anchor=(1.15, 1), 
-                                           loc='upper left',
-                                           frameon=True)
-    
-    # Adjust layout
-    plt.setp(cm_output.ax_heatmap.get_xticklabels(), rotation=45, ha='right')
-    plt.setp(cm_output.ax_heatmap.get_yticklabels(), rotation=0)
-    plt.title(plot_title)
-    cm_output.fig.savefig(output_dir / 'plots' / 'correlation_heatmap_output.png', dpi=300, bbox_inches='tight')
-    plt.close(cm_output.fig)
-    logger.info(f"Saved correlation heatmap to {output_dir / 'plots' / 'correlation_heatmap_output.png'}")
+    # Plot input correlation heatmap
+    _plot_correlation_heatmap(input_data, output_dir, sample_annotation_path, analysis, plot_title, covariate_name, row_centered, is_input = True)
+
+    # Plot output correlation heatmap
+    _plot_correlation_heatmap(output_data, output_dir, sample_annotation_path, analysis, plot_title, covariate_name, row_centered, is_input = False)
 
 def plot_cv_loss(train_losses, val_losses, fold, out_dir):
     # plot the loss history; stratified by fold
