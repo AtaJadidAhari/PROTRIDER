@@ -392,3 +392,35 @@ class TestConfigDefaults:
         assert config.verbose is False
         assert config.device == "gpu"
         assert config.seed == 42
+    
+    def test_dump_config(self):
+        """Test dumping config to YAML."""
+        config = ProtriderConfig(
+            out_dir="output",
+            input_intensities="data.csv",
+            input_format="proteins_as_columns",
+            sample_annotation="annotations.csv",
+            cov_used=["SEX", "AGE"],
+            n_epochs=50
+        )
+        
+        # Dump config to dictionary
+        config_dict = config.as_dict()
+        
+        # Verify key fields are present
+        assert config_dict["input_intensities"] == "data.csv"
+        assert config_dict["input_format"] == "proteins_as_columns"
+        assert config_dict["sample_annotation"] == "annotations.csv"
+        assert config_dict["cov_used"] == ["SEX", "AGE"]
+        assert config_dict["n_epochs"] == 50
+        
+        # Test that it can be serialized to YAML
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            yaml.dump(config_dict, f)
+            yaml_path = f.name
+        
+        # Load it back
+        with open(yaml_path, 'r') as f:
+            loaded_dict = yaml.safe_load(f)
+        
+        assert loaded_dict["input_format"] == "proteins_as_columns"

@@ -138,7 +138,6 @@ class ProtriderConfig:
         Args:
             out_dir: Output directory path where config.yaml will be saved
         """
-        import dataclasses
         import logging
         
         logger = logging.getLogger(__name__)
@@ -146,16 +145,28 @@ class ProtriderConfig:
         out_p = out_dir / 'config.yaml'
         
         # Only save fields that are part of __init__ (exclude computed fields)
-        config_dict = {
-            f.name: getattr(self, f.name)
-            for f in dataclasses.fields(self)
-            if f.init  # Only include fields that are initialized (excludes computed fields)
-        }
+        config_dict = self.as_dict()
         
         with open(out_p, 'w') as f:
             yaml.safe_dump(config_dict, f)
         
         logger.info(f"Saved run config to {out_p}")
+
+    def as_dict(self) -> dict:
+        """
+        Convert the ProtriderConfig dataclass to a dictionary,
+        excluding non-serializable fields.
+        
+        Returns:
+            dict: Dictionary representation of the configuration
+        """
+        import dataclasses
+        
+        return {
+            f.name: getattr(self, f.name)
+            for f in dataclasses.fields(self)
+            if f.init  # Only include fields that are initialized (excludes computed fields)
+        }
 
 
 def load_config(config_path: Union[str, Path]) -> ProtriderConfig:

@@ -221,7 +221,7 @@ def run(config_path: str):
             level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
 
     logger.info('Starting protrider')
-    logger.info("Config:\n%s", yaml.dump(config.__dict__, default_flow_style=False))
+    logger.info("Config:\n%s", yaml.dump(config.as_dict(), default_flow_style=False))
 
     path = Path(config.out_dir)
     path.mkdir(parents=True, exist_ok=True)
