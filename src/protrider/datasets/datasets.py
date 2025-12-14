@@ -201,7 +201,7 @@ class OutriderDataset(Dataset, PCADataset):
         _, self.passed_filter = self.filter_genes_by_fpkm(self.fpkms.T, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
         self.data = self.data.loc[:, self.passed_filter.values]
 
-        self.raw_filtered = copy.deepcopy(self.data)  ## for storing output
+        self.raw_filtered = copy.deepcopy(self.data)  ## for storing output/plotting
 
         # normalize with size_factors
         self.data = np.log((1 + self.data) / self.size_factors)

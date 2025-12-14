@@ -178,6 +178,7 @@ def plot_training_loss(output_dir, plot_title="", fontsize=10):
 
 def _plot_correlation_heatmap(data, output_dir, sample_annotation_path, analysis, plot_title, covariate_name, row_centered, is_input):
     row_colors = None
+
     if sample_annotation_path is not None:
         sample_annotation = covariates.read_annotation_file(sample_annotation_path)
         # Get covariate values for coloring
@@ -226,24 +227,50 @@ def _plot_correlation_heatmap(data, output_dir, sample_annotation_path, analysis
     plt.close(cluster_map.fig)
     logger.info(f"Saved correlation heatmap to {output_dir}/plots/correlation_heatmap_{file_suffix}.png")
 
+
 def _center_data(data):
     row_means = data.mean(axis=1, skipna=True)
     return data.sub(row_means, axis=0)
 
+
 def _calculate_correlation_matrix(data, analysis, row_centered):
     if analysis == "outrider":
-        # TODO: test with log1p instead of log2
         data = np.log2(data + 1)
 
-    if row_centered is True:
+    if row_centered:
         data = _center_data(data)
         
-    data = data.corr(method="spearman")
-    return data
+    corr = data.corr(method="spearman")
+    return corr
 
-def plot_correlation_heatmap(output_dir, sample_annotation_path: str, analysis="protrider", plot_title="", covariate_name=None, row_centered=True):
+
+def _calculate_expected_log_geometric_mean_per_gene(output_ae: pd.DataFrame, lower_bound: float = 0.5):
     """
-    Create a correlation heatmap plot for protein data colored by covariate values.
+    Calculates the expectedLogGeomMean as defined in OUTRIDER.
+    
+    Args:
+        output_ae (pd.DataFrame): The output DataFrame (normalization factors).
+                                  Rows = Genes, Columns = Samples.
+        lower_bound (float): The epsilon value to replace zeros/small values.
+        
+    Returns:
+        pd.DataFrame: The expected log geometric mean per gene.
+    """
+    floored_output = output_ae.clip(lower=lower_bound)
+    log_output = np.log(floored_output)
+    mean_log = log_output.mean(axis=1, skipna=True)
+    expected_log_geometric_mean = np.exp(mean_log)
+    return expected_log_geometric_mean
+
+
+def plot_correlation_heatmap(output_dir,
+                             sample_annotation_path: str,
+                             analysis="protrider",
+                             plot_title="",
+                             covariate_name=None,
+                             row_centered=True):
+    """
+    Create a correlation heatmap plot for protein/gene data colored by covariate values.
     
     Args:
         
@@ -256,14 +283,21 @@ def plot_correlation_heatmap(output_dir, sample_annotation_path: str, analysis="
         output_data = pd.read_csv(f"{output_dir}/zscores.csv").set_index('proteinID')
     elif analysis == "outrider":
         # TODO: change to geneID once fixed
-        input_data = pd.read_csv(f"{output_dir}/processed_input.csv").set_index('proteinID')
-        output_data = pd.read_csv(f"{output_dir}/output.csv").set_index('proteinID')
-    
-    # Plot input correlation heatmap
-    _plot_correlation_heatmap(input_data, output_dir, sample_annotation_path, analysis, plot_title, covariate_name, row_centered, is_input = True)
+        input_data = pd.read_csv(f"{output_dir}/raw_filtered_input.csv").set_index('proteinID')
+        normalization_factors = pd.read_csv(f"{output_dir}/output.csv").set_index('proteinID')
 
-    # Plot output correlation heatmap
-    _plot_correlation_heatmap(output_data, output_dir, sample_annotation_path, analysis, plot_title, covariate_name, row_centered, is_input = False)
+        min_epsilon = 0.5    
+        normalization_factors = normalization_factors.clip(lower=min_epsilon)
+        expected_log_geometric_mean = _calculate_expected_log_geometric_mean_per_gene(normalization_factors, min_epsilon)
+
+        normalized_counts = input_data / normalization_factors
+        output_data =  normalized_counts.multiply(expected_log_geometric_mean, axis=0)
+    
+    _plot_correlation_heatmap(input_data, output_dir, sample_annotation_path, analysis,
+                              plot_title + " (Input)", covariate_name, row_centered, is_input = True)
+    _plot_correlation_heatmap(output_data, output_dir, sample_annotation_path, analysis,
+                              plot_title + " (Output)", covariate_name, row_centered, is_input = False)
+
 
 def plot_cv_loss(train_losses, val_losses, fold, out_dir):
     # plot the loss history; stratified by fold

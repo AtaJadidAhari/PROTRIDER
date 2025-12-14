@@ -283,11 +283,8 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         optimizer.step()
 
         # Update dispersions in OUTRIDER model
-        # if model.model_type == "outrider" and epoch % 100 == 0:
-        logger.debug("fitting thetas")
         with torch.no_grad():
             _, theta = model.get_dispersion_parameters()
-            # Fit dispersions using Scipy optimizer
             x_pred = torch.exp(x_hat) * size_factors
             model.fit_dispersion(raw_x.T, x_pred.T)
             model.dispersion.clip_theta()

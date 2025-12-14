@@ -303,6 +303,12 @@ def _write_results(result: Result, model_info: ModelInfo, out_dir, config: dict,
     result.dataset.data.T.to_csv(out_p, header=True, index=True)
     logger.info(f"Saved processed_input to {out_p}")
 
+    # AE raw, filtered input
+    if config["analysis"] == 'outrider':
+        out_p = f'{out_dir}/raw_filtered_input.csv'
+        result.dataset.raw_filtered.T.to_csv(out_p, header=True, index=True)
+        logger.info(f"Saved raw_filtered_input to {out_p}")
+
     # AE output
     out_p = f'{out_dir}/output.csv'
     result.df_out.T.to_csv(out_p, header=True, index=True)
