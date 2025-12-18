@@ -8,7 +8,7 @@ __all__ = ["fit_residuals", "get_pvals", "adjust_pvals"]
 
 logger = logging.getLogger(__name__)
 
-def fit_residuals(res, dis='gaussian'):
+def fit_residuals(res, dis='gaussian', n_jobs=-1):
     if dis == 'gaussian':
         sigma = np.nanstd(res, ddof=1, axis=0)
         mu = np.nanmean(res, axis=0)
@@ -32,7 +32,7 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
         pvals, z = _get_pv_norm(res, mu=mu, sigma=sigma, how=how, )
     elif dis == 't':
         assert df0 is not None, "df0 should be provided for t-distribution"
-        pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how)
+        pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how, n_jobs=n_jobs)
     elif dis == 'nb':
         z, _, _, _ = calc_effect(x_true, res, "zscores")
         pvals = get_pv_nb(x_true, res, mu=mu, theta=theta, how=how)
@@ -202,7 +202,7 @@ def _fit_t_base(x, max_df=None, df=None):
     return mu, sigma, df
 
 
-def _fit_t(res, max_df=100000):
+def _fit_t(res, max_df=100000, n_jobs=-1):
     """
     Determine the degree of freedom for each protein in the data matrix. Take the median of the
     converged fits as the default degree of freedom.
@@ -230,7 +230,7 @@ def _fit_t(res, max_df=100000):
     df = np.full(res.shape[1], np.nan, dtype=np.float64)  # Array to store degrees of freedom
     # First pass: Fit the degree of freedom for each column of the data matrix
     ## if pv is too large, replace with np.nan --> it means it did not converge
-    results = Parallel(n_jobs=-1)(delayed(first_pass)(j) for j in tqdm.trange(res.shape[1]))
+    results = Parallel(n_jobs=n_jobs)(delayed(first_pass)(j) for j in tqdm.trange(res.shape[1]))
     for j, _df in results:
         df[j] = _df
 
@@ -253,7 +253,7 @@ def _fit_t(res, max_df=100000):
     mu = np.full(res.shape[1], np.nan, dtype=np.float64)
     sigma = np.full(res.shape[1], np.nan, dtype=np.float64)
     # Second pass, fit distribution now using df
-    results = Parallel(n_jobs=-1)(delayed(second_pass)(j) for j in tqdm.trange(res.shape[1]))
+    results = Parallel(n_jobs=n_jobs)(delayed(second_pass)(j) for j in tqdm.trange(res.shape[1]))
     for j, _mu, _sigma in results:
         mu[j] = _mu
         sigma[j] = _sigma
@@ -261,7 +261,7 @@ def _fit_t(res, max_df=100000):
     return mu, sigma, df0
 
 
-def get_pv_t(res, sigma, mu, df0, how='two-sided'):
+def get_pv_t(res, sigma, mu, df0, how='two-sided', n_jobs=-1):
     # Validate the optional distribution parameters
     if not isinstance(sigma, (int, float)):
         assert len(sigma) == res.shape[
@@ -279,7 +279,7 @@ def get_pv_t(res, sigma, mu, df0, how='two-sided'):
 
     pv_t = np.full_like(res, np.nan, dtype=np.float64)  # Matrix to store p-values
     z_scores = np.full_like(res, np.nan, dtype=np.float64)  # Matrix to store z-scores
-    results = Parallel(n_jobs=-1)(delayed(process_column_with_df)(j) for j in tqdm.trange(res.shape[1]))
+    results = Parallel(n_jobs=n_jobs)(delayed(process_column_with_df)(j) for j in tqdm.trange(res.shape[1]))
     for j, pv, z in results:
         pv_t[:, j] = pv
         z_scores[:, j] = z

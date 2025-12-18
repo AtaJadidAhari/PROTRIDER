@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "protrider"
-version='1.0'
+version='0.9'
 description = "PROTRIDER - Protein outlier detection method"
 authors = [
-    { name = "Ines Scheller"},
     { name = "Daniela Klaproth-Andrade", email = "daniela.andrade@tum.de"},
+    { name = "Ines Scheller"},
+    { name = "Ata Jadid Ahari"},
     { name = "George Tsitsiridis"},
 ]
 readme = "README.md"
@@ -29,19 +30,21 @@ dependencies = [
     'scikit-learn',
     'pathlib',
     'seaborn',
-    'plotnine'
+    'plotnine',
+    'pyarrow',
+    'fastparquet'
 ]
 
 [project.urls]
 Homepage = "https://github.com/gagneurlab/PROTRIDER"
 
-[project.optional-dependencies]
+[project.scripts]
+protrider = "protrider.cli:cli"
+
+[dependency-groups]
 dev = [
     "pytest",
     "pytest-cov",
     "pytest-xdist",
     "cython"
 ]
-
-[project.scripts]
-protrider = "protrider.main:cli"

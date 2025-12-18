@@ -6,10 +6,9 @@ import torch
 import copy
 from typing import Union
 
-from .stats import get_pvals, fit_residuals
+from protrider.stats import get_pvals, fit_residuals
 from .model import ProtriderAutoencoder, train, MSEBCELoss, NegativeBinomialLoss  # masked
-
-from .datasets import ProtriderSubset, ProtriderDataset, OutriderDataset
+from protrider.datasets import ProtriderSubset, ProtriderDataset, OutriderDataset
 import logging
 
 __all__ = ['init_model', 'find_latent_dim']
@@ -24,7 +23,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                     pval_sided='two-sided', pval_dist='gaussian',
                     out_dir=None, device=torch.device('cpu'),
                     presence_absence=False, lambda_bce=1.,
-                    model_type='protrider', loss_fn="MSE"
+                    model_type='protrider', loss_fn="MSE", n_jobs=-1
                     ):
     dataset.perform_svd()
     q = dataset.find_enc_dim_optht()
@@ -74,7 +73,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
             X_in[injected_dataset.mask] = np.nan
             if model.model_type == "protrider":
                 res = X_in - X_out
-                mu, sigma, df0 = fit_residuals(res=res.values, x_true=injected_dataset.raw_filtered.values, dis='gaussian')
+                mu, sigma, df0 = fit_residuals(res=res.values, x_true=injected_dataset.raw_filtered.values, dis='gaussian', n_jobs=n_jobs)
             elif model.model_type == "outrider":
                 df_out_clamped = np.clip(X_out, -700, 700)
                 df_res = np.exp(df_out_clamped) * dataset.size_factors
@@ -96,7 +95,8 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                                  theta=theta,
                                  df0=df0,
                                  how=config['pval_sided'],
-                                 dis=config['pval_dist'])
+                                 dis=config['pval_dist'],
+                                 n_jobs=n_jobs)
 
             auprc = _get_prec_recall(pvals, outlier_mask)
             logger.info(f"\t==> q = {latent_dim}: AUPRC = {auprc}")
