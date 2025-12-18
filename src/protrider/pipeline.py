@@ -5,8 +5,8 @@ import logging
 import torch
 from dataclasses import dataclass
 
-from .model import train, train_val, MSEBCELoss, ProtriderAutoencoder, find_latent_dim, init_model, ModelInfo
-from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator
+from .model import train, train_val, MSEBCELoss, ProtriderAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
+from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset
 from .stats import get_pvals, fit_residuals, adjust_pvals
 from .plots import plot_cv_loss
 from .config import ProtriderConfig
@@ -398,12 +398,23 @@ def _run_protrider_standard(
     """
     # 1. Initialize dataset
     logger.info('Initializing dataset')
-    dataset = ProtriderDataset(input_intensities=input_intensities,
+    if config.analysis == "protrider":
+        dataset = ProtriderDataset(input_intensities=input_intensities,
                                index_col=config.index_col,
                                sa_file=sample_annotation,
                                cov_used=config.cov_used,
                                log_func=config.log_func,
                                maxNA_filter=config.max_allowed_NAs_per_protein,
+                               device=config.device_torch,
+                               input_format=config.input_format)
+    elif config.analysis == "outrider":
+        dataset = OutriderDataset(input_intensities=input_intensities,
+                               index_col=config.index_col,
+                               sa_file=sample_annotation,
+                               cov_used=config.cov_used,
+                               log_func=config.log_func,
+                               fpkm_cutoff=config.fpkmCutoff,
+                               gtf=config.gtf,
                                device=config.device_torch,
                                input_format=config.input_format)
 
@@ -426,7 +437,9 @@ def _run_protrider_standard(
                         device=config.device_torch,
                         presence_absence=config.presence_absence,
                         lambda_bce=config.lambda_presence_absence,
-                        n_jobs=config.n_jobs
+                        model_type=config.analysis,
+                        loss_fn=config.autoencoder_loss,
+                        n_jobs=config.n_jobs,
                         )
 
     logger.info(
@@ -438,44 +451,63 @@ def _run_protrider_standard(
                        n_layer=config.n_layers,
                        h_dim=config.h_dim,
                        device=config.device_torch,
-                       presence_absence=config.presence_absence if config.n_layers == 1 else False
+                       presence_absence=config.presence_absence if config.n_layers == 1 else False,
+                       model_type=config.analysis
                        )
-    criterion = MSEBCELoss(
-        presence_absence=config.presence_absence, lambda_bce=config.lambda_presence_absence)
+
+    if config.autoencoder_loss == "MSE":
+        criterion = MSEBCELoss(presence_absence=config.presence_absence, lambda_bce=config.lambda_presence_absence)
+    elif config.autoencoder_loss == "NLL":
+        criterion = NegativeBinomialLoss(presence_absence=config.presence_absence, lambda_bce=config.lambda_presence_absence)
+    
     logger.info('Model:\n%s', model)
     logger.info('Device: %s', config.device_torch)
 
-    # 4. Compute initial loss
-    df_out, df_presence, init_loss, init_mse_loss, init_bce_loss = _inference(
-        dataset, model, criterion)
+ ## 4. Compute initial loss
+    df_out, theta, df_presence, init_loss, init_mse_loss, init_bce_loss = _inference(dataset, model, criterion, batch_size=config.batch_size)
     logger.info('Initial loss after model init: %s, mse loss: %s, bce loss: %s', init_loss, init_mse_loss,
                 init_bce_loss)
+
     final_loss = 10**4
     train_losses = []
     if config.autoencoder_training:
         logger.info('Fitting model')
-        # 5. Train model
-        _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config.n_epochs, learning_rate=float(config.lr),
-                                      batch_size=config.batch_size)
-        df_out, df_presence, final_loss, final_mse_loss, final_bce_loss = _inference(
-            dataset, model, criterion)
-        logger.info('Final loss: %s, mse loss: %s, bce loss: %s',
-                    final_loss, final_mse_loss, final_bce_loss)
+        _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config.n_epochs, learning_rate=float(config.lr), batch_size=config.batch_size)
+        df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion, batch_size=config.batch_size)
+        logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_reconstruction_loss, final_bce_loss)
     else:
         final_loss = init_loss
 
     # 6. Compute residuals, pvals, zscores
     logger.info('Computing statistics')
-    df_res = dataset.data - df_out  # log data - pred data
+    if config.analysis == "protrider":
+        df_res = dataset.data - df_out  # log data - pred data
+        mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
+    elif config.analysis == "outrider":
+        df_out_clamped = np.clip(df_out, -700, 700)
+        df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
+        df_out = df_res
+        sigma = None
+        df0 = None
 
-    mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
-    pvals, Z = get_pvals(df_res.values,
+        mu, theta = model.get_dispersion_parameters()
+
+        if mu is None:
+            # Fitting NB for outrider if it is not set yet
+            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
+            mu, theta = model.get_dispersion_parameters()
+
+    pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
+                         res=df_res.values,
                          mu=mu,
                          sigma=sigma,
                          df0=df0,
                          how=config.pval_sided,
-                         dis=config.pval_dist, n_jobs=config.n_jobs)
-    pvals_one_sided, _ = get_pvals(df_res.values,
+                         theta=theta,
+                         dis=config.pval_dist,
+                         n_jobs=config.n_jobs)
+    pvals_one_sided, _ = get_pvals(x_true=dataset.raw_filtered.values,
+                                   res=df_res.values,
                                    mu=mu,
                                    sigma=sigma,
                                    df0=df0,

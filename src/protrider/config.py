@@ -21,11 +21,18 @@ class ProtriderConfig:
     """
     
     # I/O paths
-    input_intensities: str  # File path only
+    input_intensities: Union[str, List[str]]  # File path only or a list of paths
     input_format: Literal["proteins_as_rows", "proteins_as_columns"] = "proteins_as_rows"
     index_col: str = "protein_ID"
     out_dir: Optional[str] = None  # File path or None
     sample_annotation: Optional[str] = None  # File path or None
+
+    # Analysis type
+    analysis = "outrider"
+
+    # OUTRIDER params
+    fpkmCutoff = 1
+    gtf = "/s/project/py_outrider/demo_ae/Data/gencode_annotation_trunc.gtf"
     
     # Preprocessing params
     max_allowed_NAs_per_protein: float = 0.3
@@ -57,6 +64,7 @@ class ProtriderConfig:
     find_q_method: str = "OHT"  # "OHT", "gs", or an integer
     init_pca: bool = True
     h_dim: Optional[int] = None
+    autoencoder_loss = "NLL" # MSE or NLL
     
     # Presence absence modelling
     presence_absence: bool = False
@@ -86,6 +94,15 @@ class ProtriderConfig:
     
     def __post_init__(self):
         """Validate configuration after initialization and set computed fields."""
+        # Normalize input_intensities to List[str]
+        if isinstance(self.input_intensities, str):
+            self.input_intensities = [self.input_intensities]
+        elif self.input_intensities is None:
+            raise ValueError("input_intensities must be provided")
+        elif not isinstance(self.input_intensities, list):
+            raise ValueError(
+                "input_intensities must be a string or a list of strings"
+            )
         # Validation
         if self.max_allowed_NAs_per_protein < 0 or self.max_allowed_NAs_per_protein > 1:
             raise ValueError("max_allowed_NAs_per_protein must be between 0 and 1")
