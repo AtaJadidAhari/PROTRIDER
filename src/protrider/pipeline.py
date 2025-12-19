@@ -712,25 +712,74 @@ def _run_protrider_cv(
     return result, model_info
 
 
-def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: ProtriderAutoencoder, criterion: MSEBCELoss):
-    X_out = model(dataset.X, dataset.torch_mask, cond=dataset.covariates)
+def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: ProtriderAutoencoder, criterion: MSEBCELoss, batch_size=None, use_cpu=True):
 
-    loss, mse_loss, bce_loss = criterion(
-        X_out, dataset.X, dataset.torch_mask, detached=True)
-    df_presence = None
-    if model.presence_absence:
-        presence_hat = torch.sigmoid(X_out[1])  # Predicted presence (0–1)
-        X_out = X_out[0]  # Predicted intensities
+    # Save original device
+    orig_device = next(model.parameters()).device
 
-        df_presence = pd.DataFrame(presence_hat.detach().cpu().numpy())
-        df_presence.columns = dataset.data.columns
-        df_presence.index = dataset.data.index
+    # Move model to CPU if requested
+    if use_cpu:
+        model = model.to("cpu")
 
-    df_out = pd.DataFrame(X_out.detach().cpu().numpy())
-    df_out.columns = dataset.data.columns
-    df_out.index = dataset.data.index
+    # Extract tensors
+    X = dataset.X
+    mask = dataset.torch_mask
+    cov = dataset.covariates
+    raw_x = getattr(dataset, "raw_x", None)
 
-    return df_out, df_presence, loss, mse_loss, bce_loss
+    # Move tensors to appropriate device (CPU or original GPU)
+    device = "cpu" if use_cpu else orig_device
+    X = X.to(device)
+    mask = mask.to(device)
+    if cov is not None:
+        cov = cov.to(device)
+    if raw_x is not None:
+        raw_x = raw_x.to(device)
+
+    model.eval()
+    with torch.no_grad():
+
+        if model.model_type == "protrider":
+            X_out = model(X, mask, cond=cov)
+            loss, reconstruction_loss, bce_loss = criterion(
+                X_out, X, mask, detached=True
+            )
+            theta = None
+
+        elif model.model_type == "outrider":
+            X_out = model(X, mask, cond=cov)
+
+            _, theta = model.get_dispersion_parameters()
+            loss, reconstruction_loss, bce_loss = criterion(
+                (theta, torch.exp(X_out) * torch.tensor(dataset.size_factors, device=device)),
+                raw_x,
+                detached=True
+            )
+
+        # Presence/Absence extension
+        df_presence = None
+        if model.presence_absence:
+            presence_hat = torch.sigmoid(X_out[1])
+            X_out = X_out[0]
+
+            df_presence = pd.DataFrame(
+                presence_hat.detach().cpu().numpy(),
+                index=dataset.data.index,
+                columns=dataset.data.columns
+            )
+
+        # Output intensities
+        df_out = pd.DataFrame(
+            X_out.detach().cpu().numpy(),
+            index=dataset.data.index,
+            columns=dataset.data.columns
+        )
+
+    # Restore model back to original device
+    if use_cpu:
+        model = model.to(orig_device)
+
+    return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
 
 def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn, pval_dist):
