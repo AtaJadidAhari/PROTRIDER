@@ -20,7 +20,7 @@ def fit_residuals(res, dis='gaussian', n_jobs=-1):
     return mu, sigma, df0
 
 
-def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian'):
+def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian', n_jobs=-1):
     hows = ('two-sided', 'left', 'right')
     if not how in hows:
         raise ValueError(f'Method should be in <{hows}>')
@@ -29,7 +29,7 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
         raise ValueError(f'Distribution should be in <{dists}>')
 
     if dis == 'gaussian':
-        pvals, z = _get_pv_norm(res, mu=mu, sigma=sigma, how=how, )
+        pvals, z = _get_pv_norm(res, mu=mu, sigma=sigma, how=how)
     elif dis == 't':
         assert df0 is not None, "df0 should be provided for t-distribution"
         pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how, n_jobs=n_jobs)

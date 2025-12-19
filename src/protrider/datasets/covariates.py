@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 import logging
 
 
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ['parse_covariates']
 
-def parse_covariates(sa_file: Optional[str], cov_used: Optional[list]) -> tuple[np.ndarray, np.ndarray]:
+def parse_covariates(sa_file: Optional[str], cov_used: Optional[list], index_order: Optional[Sequence[str]] = None) -> tuple[np.ndarray, np.ndarray]:
     """Parse covariates from sample annotation file.
     
     Args:
@@ -34,7 +34,8 @@ def parse_covariates(sa_file: Optional[str], cov_used: Optional[list]) -> tuple[
     logger.info(f'Finished reading sample annotation with shape: {sample_anno.shape}')
     
     # Sort sa based on intensity sample orders
-    sample_anno = sort_sa_file(sample_anno, index_order)
+    if index_order is not None:
+        sample_anno = sort_sa_file(sample_anno, index_order)
     
     # Process covariates
     processed_covariates = _process_covariates(sample_anno[cov_used])
@@ -79,16 +80,12 @@ def sort_sa_file(sample_anno: pd.DataFrame, index_order: pd.Index) -> pd.DataFra
         If the lengths of `sample_anno` and `index_order` do not match,
         or if the indices in `index_order` do not match those in `sample_anno`.
     """
-    sample_anno.index = sample_anno.sampleID
+    sample_anno.index = sample_anno.sample_ID
     sample_anno.index.names = ["index"]
     index_list = list(index_order)
-
-    # Basic checks
-    if 'sampleID' not in sample_anno.columns:
-        raise ValueError("sample_anno must contain a 'sampleID' column.")
       
     # Restrict to only samples in intentisy file
-    sample_anno = sample_anno[sample_anno["sampleID"].isin(index_list)]
+    sample_anno = sample_anno[sample_anno["sample_ID"].isin(index_list)]
     
     # Check length
     if len(sample_anno) != len(index_order):
@@ -101,10 +98,10 @@ def sort_sa_file(sample_anno: pd.DataFrame, index_order: pd.Index) -> pd.DataFra
     if not set(sample_anno.index) == set(index_list):
         raise ValueError("Indices in index_order do not match sample_anno.index.")
     # Create an order DataFrame with explicit positions (keeps duplicates and order)
-    order_df = pd.DataFrame({'sampleID': index_list, '__order_pos': range(len(index_list))})
+    order_df = pd.DataFrame({'sample_ID': index_list, '__order_pos': range(len(index_list))})
 
     # Merge then sort by the position; using inner join because we've already validated multisets
-    merged = pd.merge(order_df, sample_anno, on='sampleID', how='left')
+    merged = pd.merge(order_df, sample_anno, on='sample_ID', how='left')
 
     merged_sorted = merged.sort_values('__order_pos', kind='stable').drop(columns='__order_pos')
 

@@ -73,7 +73,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
             X_in[injected_dataset.mask] = np.nan
             if model.model_type == "protrider":
                 res = X_in - X_out
-                mu, sigma, df0 = fit_residuals(res=res.values, x_true=injected_dataset.raw_filtered.values, dis='gaussian', n_jobs=n_jobs)
+                mu, sigma, df0 = fit_residuals(res=res, dis=pval_dist, n_jobs=n_jobs)
             elif model.model_type == "outrider":
                 df_out_clamped = np.clip(X_out, -700, 700)
                 df_res = np.exp(df_out_clamped) * dataset.size_factors
@@ -87,15 +87,14 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                     # Fitting NB for outrider if it is not set yet
                     model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
                     mu, theta = model.get_dispersion_parameters()
-            
             pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
-                                 res=df_res.values,
+                                 res=res,
                                  mu=mu,
                                  sigma=sigma,
                                  theta=theta,
                                  df0=df0,
-                                 how=config['pval_sided'],
-                                 dis=config['pval_dist'],
+                                 how=pval_sided,
+                                 dis=pval_dist,
                                  n_jobs=n_jobs)
 
             auprc = _get_prec_recall(pvals, outlier_mask)
@@ -116,6 +115,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         for latent_dim in possible_qs:
             logger.info(f"Testing q = {latent_dim}")
             auprc = train_and_eval_q(latent_dim)
+            enc_search_results.loc[len(enc_search_results)] = {"encod_dim": latent_dim, "aucpr": auprc}
 
         q = int(enc_search_results.loc[enc_search_results['aucpr'].idxmax()]['encod_dim'])
         logger.info(f'Finished grid search. Optimal encoding dimension = {q}.')

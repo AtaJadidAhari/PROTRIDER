@@ -24,15 +24,14 @@ class ProtriderConfig:
     input_intensities: Union[str, List[str]]  # File path only or a list of paths
     input_format: Literal["proteins_as_rows", "proteins_as_columns"] = "proteins_as_rows"
     index_col: str = "protein_ID"
+    # Analysis type
+    analysis: str = "protrider"
     out_dir: Optional[str] = None  # File path or None
     sample_annotation: Optional[str] = None  # File path or None
 
-    # Analysis type
-    analysis = "outrider"
-
     # OUTRIDER params
-    fpkmCutoff = 1
-    gtf = "/s/project/py_outrider/demo_ae/Data/gencode_annotation_trunc.gtf"
+    fpkmCutoff: Optional[int] =  1
+    gtf: Optional[str] = "sample_data/gencode_annotation_trunc.gtf"
     
     # Preprocessing params
     max_allowed_NAs_per_protein: float = 0.3
@@ -64,7 +63,7 @@ class ProtriderConfig:
     find_q_method: str = "OHT"  # "OHT", "gs", or an integer
     init_pca: bool = True
     h_dim: Optional[int] = None
-    autoencoder_loss = "NLL" # MSE or NLL
+    autoencoder_loss: str = "MSE" # MSE or NLL
     
     # Presence absence modelling
     presence_absence: bool = False
@@ -78,7 +77,7 @@ class ProtriderConfig:
     fit_every_fold: bool = False
     
     # Statistical params
-    pval_dist: Literal["gaussian", "t"] = "t"
+    pval_dist: Literal["gaussian", "t", "nb"] = "t"
     pval_adj: Literal["by", "bh"] = "by"
     pval_sided: Literal["two-sided", "left", "right"] = "two-sided"
     pseudocount: float = 0.01

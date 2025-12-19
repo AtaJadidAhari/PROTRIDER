@@ -2,10 +2,10 @@
 out_dir: output
 
 # csv input file containing intensities. Columns are samples and rows are proteins.
-input_intensities: "/s/project/py_outrider/demo_data/drop_demo_counts_all.tsv"
+input_intensities: "sample_data/protrider_sample_dataset.tsv"
 
 # column name in the input file indicating the column name containing the protein names/IDs
-index_col: "geneID"
+index_col: "protein_ID"
 
 # csv file containing sample annotations
 # sample_annotation: sample_data/sample_annotations.tsv
@@ -17,7 +17,7 @@ max_allowed_NAs_per_protein: 0.3
 # set this to null if the data is already log-transformed
 #log_func_name: "log"
 
-analysis: "outrider"
+analysis: "protrider"
 fpkmCutoff: 1
 # gtf: "/s/genomes/human/hg38/gencode.v34/gencode.v34.annotation.gtf.gz"
 gtf: "/s/project/py_outrider/demo_ae/Data/gencode_annotation_trunc.gtf"
@@ -63,7 +63,7 @@ cross_val: False # run protrider in k-fold cross-validation mode; only implement
 #fit_every_fold: False # fit residual model for every fold; defaults to false
 
 ## Stat params
-pval_dist: 'nb' # Distribution choice for P-value computation. Options: gaussian, t, nb
+pval_dist: 't' # Distribution choice for P-value computation. Options: gaussian, t, nb
 pval_adj: 'by' # Multiple testing correction. Options: by, bh
 pval_sided: 'two-sided'
 pseudocount: 0.01 # for FC computation

@@ -11,9 +11,8 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 import logging
-from .x import Dispersion, NegativeBinomialDistribution
+#from ..dispersions import Dispersion, NegativeBinomialDistribution
 
-from .datasets import ProtriderSubset
 from protrider.datasets import ProtriderSubset
 
 logger = logging.getLogger(__name__)
@@ -374,12 +373,13 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         optimizer.step()
 
         # Update dispersions in OUTRIDER model
-        with torch.no_grad():
-            _, theta = model.get_dispersion_parameters()
-            x_pred = torch.exp(x_hat) * size_factors
-            model.fit_dispersion(raw_x.T, x_pred.T)
-            model.dispersion.clip_theta()
-            _, theta = model.get_dispersion_parameters()
+        if model.model_type == "outrider":
+            with torch.no_grad():
+                _, theta = model.get_dispersion_parameters()
+                x_pred = torch.exp(x_hat) * size_factors
+                model.fit_dispersion(raw_x.T, x_pred.T)
+                model.dispersion.clip_theta()
+                _, theta = model.get_dispersion_parameters()
 
         # Gather data and report
         running_loss += loss.item()

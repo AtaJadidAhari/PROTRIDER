@@ -615,9 +615,9 @@ def _run_protrider_cv(
         logger.info('Device: %s', config.device_torch)
 
         # 5. Compute initial MSE loss
-        df_out_train, df_presence_train, train_loss, train_mse_loss, train_bce_loss = _inference(train_subset, model,
+        df_out_train, theta_train, df_presence_train, train_loss, train_mse_loss, train_bce_loss = _inference(train_subset, model,
                                                                                                  criterion)
-        df_out_val, df_presence_val, val_loss, val_mse_loss, val_bce_loss = _inference(
+        df_out_val, theta_val, df_presence_val, val_loss, val_mse_loss, val_bce_loss = _inference(
             val_subset, model, criterion)
         logger.info(f'Train loss after model init: {train_loss}')
         logger.info(f'Validation loss after model init: {val_loss}')
@@ -637,16 +637,16 @@ def _run_protrider_cv(
         else:
             train_losses_list.append([])
 
-        df_out_train, df_presence_train, train_loss, train_mse_loss, train_bce_loss = _inference(train_subset, model,
+        df_out_train, theta_train, df_presence_train, train_loss, train_mse_loss, train_bce_loss = _inference(train_subset, model,
                                                                                                  criterion)
-        df_out_val, df_presence_val, val_loss, val_mse_loss, val_bce_loss = _inference(
+        df_out_val, theta_val, df_presence_val, val_loss, val_mse_loss, val_bce_loss = _inference(
             val_subset, model, criterion)
         logger.info(f'Fold {fold} train loss: {train_loss}')
         logger.info(f'Fold {fold} validation loss: {val_loss}')
 
         # 7. Compute residuals on test set
         logger.info('Running model on test set')
-        df_out_test, df_presence_test, test_loss, test_mse_loss, test_bce_loss = _inference(test_subset, model,
+        df_out_test, theta_test, df_presence_test, test_loss, test_mse_loss, test_bce_loss = _inference(test_subset, model,
                                                                                             criterion)
         logger.info(f'Fold {fold} test loss: {test_loss}')
         df_res_test = test_subset.data - df_out_test  # log data - pred data
@@ -667,7 +667,7 @@ def _run_protrider_cv(
             df_res_train = train_subset.data - df_out_train  # log data - pred data
             mu, sigma, df0 = fit_residuals(
                 pd.concat([df_res_train, df_res_val]).values, dis=config.pval_dist, n_jobs=config.n_jobs)
-            pvals, Z = get_pvals(df_res_test.values, mu=mu,
+            pvals, Z = get_pvals(x_true=dataset.raw_filtered.values, res=df_res_test.values, mu=mu,
                                  sigma=sigma, df0=df0, how=config.pval_sided, n_jobs=config.n_jobs)
             pvals_list.append(pvals)
             Z_list.append(Z)
@@ -686,13 +686,14 @@ def _run_protrider_cv(
     else:
         logger.info('Estimating residual distribution parameters')
         mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
-        pvals, Z = get_pvals(df_res.values, mu=mu, sigma=sigma, df0=df0,
+        pvals, Z = get_pvals(x_true=dataset.raw_filtered.values, res=df_res.values, mu=mu, sigma=sigma, df0=df0,
                              how=config.pval_sided, n_jobs=config.n_jobs)
         # Repeat df0 for each sample in the output
         df0_list = [df0] * len(df_out)
 
     # Compute one-sided p-values (used for some plots)
-    pvals_one_sided, _ = get_pvals(df_res.values,
+    pvals_one_sided, _ = get_pvals(x_true=dataset.raw_filtered.values,
+                                   res=df_res.values,
                                    mu=mu,
                                    sigma=sigma,
                                    df0=df0 if config.pval_dist == 't' else None,

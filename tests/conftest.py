@@ -18,7 +18,7 @@ def covariates_path():
 
 @pytest.fixture
 def protein_intensities_path():
-    return Path('sample_data/protrider_sample_dataset.tsv')
+    return 'sample_data/protrider_sample_dataset.tsv'
 
 
 @pytest.fixture

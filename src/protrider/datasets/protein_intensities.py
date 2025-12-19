@@ -34,7 +34,7 @@ def read_protein_intensities(input_intensities: str, index_col: str, input_forma
             temp_data = pd.read_csv(input_intensity, compression=compression).set_index(index_col)
         elif suffixes[-1] == '.tsv':
             temp_data = pd.read_csv(input_intensity, sep='\t', compression=compression).set_index(index_col)
-        elif file_extension == '.parquet':
+        elif suffixes[-1] == '.parquet':
             temp_data = pd.read_parquet(input_intensity).set_index(index_col)
         else:
             raise ValueError(f"Unsupported file type: {suffixes[-1]}")

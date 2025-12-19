@@ -115,6 +115,7 @@ class ProtriderDataset(Dataset, PCADataset):
         self.covariates = self.covariates.to(device)
         self.prot_means_torch = self.prot_means_torch.to(device)
         # self.presence = (~self.torch_mask).long()
+        self.raw_filtered = pd.DataFrame()
 
     def __len__(self):
         return len(self.X)
