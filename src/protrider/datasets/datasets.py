@@ -184,10 +184,12 @@ class ProtriderSubset(Subset, PCADataset):
 
 
 class OutriderDataset(Dataset, PCADataset):
-    def __init__(self, input_intensities, index_col, sa_file=None,
-                 cov_used=None, log_func=np.log,
-                 fpkm_cutoff=1, gtf=None,
-                 device=torch.device('cpu')):
+    def __init__(self, input_intensities: str, index_col: str,
+                 sa_file: Optional[str] = None,
+                 cov_used: Optional[list] = None, log_func: Callable = np.log,
+                 fpkm_cutoff: int = 1, gtf: str = None,
+                 device: torch.device = torch.device('cpu'),
+                 input_format: str = "proteins_as_rows"):
         super().__init__()
 
         # Read and preprocess protein intensities
@@ -220,7 +222,6 @@ class OutriderDataset(Dataset, PCADataset):
         self.data = self.data.loc[:, self.passed_filter.values]
 
         self.raw_filtered = copy.deepcopy(self.data)  ## for storing output/plotting
-
         # normalize with size_factors
         self.data = np.log((1 + self.data) / self.size_factors)
 

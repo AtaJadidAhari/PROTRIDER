@@ -35,7 +35,7 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
         pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how, n_jobs=n_jobs)
     elif dis == 'nb':
         z, _, _, _ = calc_effect(x_true, res, "zscores")
-        pvals = get_pv_nb(x_true, res, mu=mu, theta=theta, how=how)
+        pvals = get_pv_nb(counts=x_true, res=res, mu=mu, theta=theta, how=how)
 
     return pvals, z
 

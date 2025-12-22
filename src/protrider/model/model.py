@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 import logging
-#from ..dispersions import Dispersion, NegativeBinomialDistribution
+from ..dispersions import Dispersion, NegativeBinomialDistribution
 
 from protrider.datasets import ProtriderSubset
 

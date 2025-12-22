@@ -36,7 +36,7 @@ class Result:
     outlier_threshold: float = 0.1  # Threshold for determining outliers
     
     def save(self, out_dir: str, format: Literal["wide", "long"] = "wide", 
-             include_all: bool = False) -> Optional[pd.DataFrame]:
+            include_all: bool = False, analysis: str = "protrider") -> Optional[pd.DataFrame]:
         """
         Save result dataframes to CSV files.
         
@@ -104,6 +104,12 @@ class Result:
             self.fc.T.to_csv(out_p, header=True, index=True)
             logger.info(f"Saved fc scores to {out_p}")
             
+            # AE raw, filtered input
+            if "analysis" == 'outrider':
+                out_p = f'{out_dir}/raw_filtered_input.csv'
+                self.dataset.raw_filtered.T.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved raw_filtered_input to {out_p}")
+
             return None
             
         elif format == "long":
@@ -512,7 +518,9 @@ def _run_protrider_standard(
                                    sigma=sigma,
                                    df0=df0,
                                    how='left',
-                                   dis=config.pval_dist, n_jobs=config.n_jobs)
+                                   theta=theta,
+                                   dis=config.pval_dist,
+                                   n_jobs=config.n_jobs)
 
     pvals_adj = adjust_pvals(pvals, method=config.pval_adj)
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
@@ -718,10 +726,6 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
     # Save original device
     orig_device = next(model.parameters()).device
 
-    # Move model to CPU if requested
-    if use_cpu:
-        model = model.to("cpu")
-
     # Extract tensors
     X = dataset.X
     mask = dataset.torch_mask
@@ -730,6 +734,10 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
 
     # Move tensors to appropriate device (CPU or original GPU)
     device = "cpu" if use_cpu else orig_device
+
+    # Move model to CPU if requested
+    model = model.to(device)
+    model.encoder.prot_means = model.encoder.prot_means.to(device)
     X = X.to(device)
     mask = mask.to(device)
     if cov is not None:
@@ -779,6 +787,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
     # Restore model back to original device
     if use_cpu:
         model = model.to(orig_device)
+        model.encoder.prot_means = model.encoder.prot_means.to(orig_device)
 
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
