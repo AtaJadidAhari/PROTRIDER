@@ -737,7 +737,8 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
 
     # Move model to CPU if requested
     model = model.to(device)
-    model.encoder.prot_means = model.encoder.prot_means.to(device)
+    if model.encoder.prot_means is not None:
+        model.encoder.prot_means = model.encoder.prot_means.to(device)
     X = X.to(device)
     mask = mask.to(device)
     if cov is not None:
@@ -787,7 +788,8 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
     # Restore model back to original device
     if use_cpu:
         model = model.to(orig_device)
-        model.encoder.prot_means = model.encoder.prot_means.to(orig_device)
+        if model.encoder.prot_means is not None:
+            model.encoder.prot_means = model.encoder.prot_means.to(orig_device)
 
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
