@@ -34,3 +34,14 @@ def categorical_covariates():
 @pytest.fixture
 def continuous_covariates():
     return ['AGE']
+
+
+@pytest.fixture
+def gene_expression_path():
+    return 'sample_data/drop_demo_counts_all.tsv'
+
+
+@pytest.fixture
+def gene_annotation_path():
+    return 'sample_data/gencode_annotation_trunc.gtf'
+
