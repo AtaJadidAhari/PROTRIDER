@@ -53,6 +53,13 @@ To run PROTRIDER, a configuration file needs to be provided. This can be adapted
 - `find_q_method`: Method to determine latent space dimension of autoencoder.
 - `pval_dist`: Distribution (Gaussian or Student's t-test) for P-value calculation.
 
+To run OUTRIDER, you have to also specify the following options:
+- `analysis`: "outrider"
+- `fpkmCutoff`: A positive number indicating the minimum FPKM per gene that 5% of the samples should have. If a gene has less it is filtered out. Default value is 1.
+- `gtf`: Full path to the GTF file.
+- `autoencoder_loss`: "NLL" to use negative log likelyhood loss for optimization.
+- `pval_dist`: "nb" to use negative binomial distribution
+
 ### Running PROTRIDER from the command line
 
 Run PROTRIDER using the following command: 
