@@ -34,6 +34,7 @@ class Result:
     n_out_total: int
     pval_dist: str = 'gaussian'  # Distribution used for p-value computation
     outlier_threshold: float = 0.1  # Threshold for determining outliers
+    dispersions: pd.DataFrame = None # Dispersions for OUTRIDER or FRASER
     
     def save(self, out_dir: str, format: Literal["wide", "long"] = "wide", 
             include_all: bool = False, analysis: str = "protrider") -> Optional[pd.DataFrame]:
@@ -51,6 +52,9 @@ class Result:
             DataFrame if format="long", None if format="wide"
             
         """
+
+        import pandas as pd
+
         if format == "wide":
             logger.info('=== Saving results in wide format ===')
             
@@ -105,10 +109,22 @@ class Result:
             logger.info(f"Saved fc scores to {out_p}")
             
             # AE raw, filtered input
-            if "analysis" == 'outrider':
+            if analysis == 'outrider':
+                # raw_filtered
                 out_p = f'{out_dir}/raw_filtered_input.csv'
                 self.dataset.raw_filtered.T.to_csv(out_p, header=True, index=True)
                 logger.info(f"Saved raw_filtered_input to {out_p}")
+
+                # sizefactors
+                sf_df = pd.DataFrame(self.dataset.size_factors.cpu(), index=self.dataset.raw_filtered.index, columns=["size_factor"])
+                out_p = f'{out_dir}/sizefactors.csv'
+                sf_df.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved sizefactors to to {out_p}")
+
+                # dispersions
+                out_p = f'{out_dir}/theta.csv'
+                self.dispersions.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved thetas to to {out_p}")
 
             return None
             
@@ -116,8 +132,6 @@ class Result:
             logger.info('=== Saving results in long format ===')
             
             # Stack all dataframes at once for efficient melting
-            import pandas as pd
-            
             # Create a multi-index dataframe with all values
             dfs_to_melt = {
                 'PROTEIN_LOG2INT': self.dataset.data,
@@ -526,7 +540,7 @@ def _run_protrider_standard(
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
                              pvals=pvals, Z=Z, pvals_one_sided=pvals_one_sided, pvals_adj=pvals_adj,
                              pseudocount=config.pseudocount, outlier_threshold=config.outlier_threshold,
-                             base_fn=config.base_fn, pval_dist=config.pval_dist)
+                             base_fn=config.base_fn, pval_dist=config.pval_dist, dispersions=theta)
     model_info = ModelInfo(q=np.array(q), learning_rate=np.array(config.lr),
                            n_epochs=np.array(config.n_epochs), test_loss=np.array(final_loss),
                            train_losses=np.array(train_losses), df_folds=None)
@@ -794,7 +808,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
 
-def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn, pval_dist):
+def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn, pval_dist, dispersions):
     # Store as df
     df_pvals_adj = pd.DataFrame(pvals_adj)
     df_pvals_adj.columns = dataset.data.columns
@@ -823,6 +837,12 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     n_out_median = np.nanmedian(outs_per_sample)
     n_out_max = np.nanmax(outs_per_sample)
     n_out_total = np.nansum(outs_per_sample)
+
+    if dispersions is not None:
+        dispersions = pd.DataFrame(dispersions)
+        dispersions.columns = ["theta"]
+        dispersions.index = dataset.data.columns
+
     logger.info(
         f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}')
 
@@ -831,4 +851,4 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
 
     return Result(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence, df_pvals=df_pvals, df_Z=df_Z,
                   df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc, n_out_median=n_out_median, n_out_max=n_out_max,
-                  n_out_total=n_out_total, pval_dist=pval_dist, outlier_threshold=outlier_threshold)
+                  n_out_total=n_out_total, pval_dist=pval_dist, outlier_threshold=outlier_threshold, dispersions=dispersions)
