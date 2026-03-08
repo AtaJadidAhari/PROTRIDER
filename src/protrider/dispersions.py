@@ -1,13 +1,33 @@
+import abc
+from typing import Optional
 import torch
 import torch.optim as optim
 import torch.nn as nn
 
-from .estimate_theta_robust_moments import estimate_theta_robust_moments
+from .estimate_theta_robust_moments import estimate_theta_robust_moments, estimate_rho_robust_moments
 
 __all__ = ['Dispersion', 'NegativeBinomialDistribution']
 
-class Dispersion:
+class Dispersion():
+    def __new__(cls, analysis, *args, **kwargs):
+        if cls is Dispersion:   # Only auto-redirect when calling the base class
+            if analysis == "fraser":
+                return FraserDispersion(*args, **kwargs)
+            elif analysis == "outrider":
+                return OutriderDispersion(*args, **kwargs)
+            else:
+                raise ValueError(f"Unknown analysis type: {analysis}")
+        return super().__new__(cls)
+    def __init__(self, analysis, distribution):
+        self.analysis = analysis  # needed?
+        self.distribution = distribution
+
+
+class OutriderDispersion():
     def __init__(self, distribution):
+        if distribution is None:
+            distribution = NegativeBinomialDistribution()
+        #super().__init__(analysis='outrider', distribution=distribution)
         self.distribution = distribution
         self.mu_scale = None
         self.theta = None
@@ -73,8 +93,83 @@ class Dispersion:
         self.theta = (torch.exp(p_theta) + lower_bound).detach().cpu()
         self.mu_scale = (torch.exp(p_mu_scale) + lower_bound).detach().cpu()
 
+class FraserDispersion(): 
+    def __init__(self, distribution: Optional[str] = None):
+        if distribution is None:
+            distribution = BetaBinomialDistribution()
+        self.distribution = distribution
+        self.mu = None
+        self.rho = None
 
-class NegativeBinomialDistribution:
+    def get_parameters(self):
+        mu = None if self.mu is None else self.mu.detach().cpu().numpy()
+        rho = None if self.rho is None else self.rho.detach().cpu().numpy()
+        return mu, rho
+    
+    def set_dispersion(self, rho):
+        self.rho = rho
+
+    def clip_rho(self, lower=0.01, upper=1000): #ASK
+        self.rho = torch.clip(self.rho, lower, upper)
+
+    def clip_mu(self, lower=0.01, upper=0.99): #ASK
+        self.mu = torch.clip(self.mu, lower, upper)
+
+    def fit(self, K, N, x_pred, max_iter=100, device=None):
+        """
+        Fit rho (dispersion) for Beta-Binomial.
+        """
+
+        mu = torch.sigmoid(x_pred).T # Shape should be junction * samples
+        # Initialize rho
+        _, rho_init = self.distribution.init_fit(K, N)
+
+        # Optimize in logit space 
+        p_rho = nn.Parameter(torch.logit(rho_init))
+
+        optimizer = optim.LBFGS(
+            [p_rho],
+            max_iter=max_iter,
+            history_size=5,
+            tolerance_change=1e-9,
+            line_search_fn="strong_wolfe",
+        )
+
+        def closure():
+            optimizer.zero_grad()
+
+            rho = torch.sigmoid(p_rho)  # ensure 0 < rho < 1
+            rho_expanded = rho.unsqueeze(1)
+
+            loss = self.distribution.loss(K, N, mu, rho_expanded)
+            #loss = self.distribution.loss_penalized(K, N, mu, rho_expanded)
+            loss.backward()
+
+            return loss
+
+        optimizer.step(closure)
+        # Final rho
+        rho_final = torch.sigmoid(p_rho).detach()
+
+        self.rho = rho_final
+        self.mu = mu  # TODO
+
+        
+
+class Distribution(): # Do we need this base class?
+    #@abc.abstractmethod
+    def init_train(self):
+        pass
+
+    #@abc.abstractmethod
+    def init_fit(self):
+        pass
+
+    #@abc.abstractmethod
+    def loss(self):
+        pass
+
+class NegativeBinomialDistribution(Distribution):
     def init_train(self, x_true, theta_min=0.01, theta_max=1000.0):
         """Initialize theta and mu for training: theta robust moments"""
         theta = estimate_theta_robust_moments(x_true=x_true.T, theta_min=theta_min, theta_max=theta_max)
@@ -114,3 +209,65 @@ class NegativeBinomialDistribution:
         log_prob = torch.nan_to_num(log_prob, nan=0.0, posinf=0.0, neginf=-1e20)
         loss = -torch.sum(log_prob)
         return loss
+
+class BetaBinomialDistribution(Distribution):
+    def init_train(self, K, N):
+        """Initialize mu and rho for training."""
+        rho = estimate_rho_robust_moments(K, N ,rho_min=1e-5, rho_max=1-1e-5) 
+        mu = None
+        return mu, rho
+
+    def init_fit(self, K, N, epsilon=1e-8, mu_min=1e-4,rho_min=1e-5, rho_max=1-1e-5):
+        """Initialize mu and rho for fitting."""
+        K = K.to(torch.float64)
+        N = N.to(torch.float64)
+
+        p = K / (N + epsilon)
+
+        mu = p.mean(dim=1)
+        var = p.var(dim=1)
+
+        # method-of-moments rho
+        denom = mu * (1 - mu)
+        rho = (var - denom / (N.mean(dim=1) + epsilon)) / (denom + epsilon)
+
+        # fallback if invalid
+        fallback = (rho <= 0) | torch.isnan(rho) | torch.isinf(rho)
+        rho[fallback] = 0.1
+
+        mu = torch.clamp(mu, mu_min, 1 - mu_min)
+        rho = torch.clamp(rho, rho_min, rho_max)
+
+        return mu, rho
+
+    def loss(self, K, N, mu, rho, eps = 0.5):
+        """Negative log-likelihood using mu/rho parameterization."""
+        K = K.to(torch.float64)
+        N = N.to(torch.float64)
+
+        # convert to alpha/beta
+        conc = (1 - rho) / rho
+        alpha = mu * conc
+        beta = (1 - mu) * conc
+
+        log_prob = (
+            torch.lgamma(N + 1)
+            - torch.lgamma(K + 1)
+            - torch.lgamma(N - K + 1)
+            + torch.lgamma(K + alpha)
+            + torch.lgamma(N - K + beta)
+            - torch.lgamma(N + alpha + beta)
+            + torch.lgamma(alpha + beta)
+            - torch.lgamma(alpha)
+            - torch.lgamma(beta)
+        )
+
+        log_prob = torch.nan_to_num(log_prob, nan=0.0, posinf=0.0, neginf=-1e20)
+        return -torch.mean(log_prob) #Sum to mean?
+
+    def loss_penalized(self, K, N, mu, rho, lambda_penalty = 1e-4): # test
+        """Negative log-likelihood with L2 penalty on rho."""
+        p_rho = nn.Parameter(torch.logit(rho))
+        nll = self.loss(K, N, mu, rho)
+        penalty = lambda_penalty * torch.sum(p_rho**2)
+        return nll + penalty

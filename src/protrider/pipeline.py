@@ -5,7 +5,7 @@ import logging
 import torch
 from dataclasses import dataclass
 
-from .model import train, train_val, MSEBCELoss, ProtriderAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
+from .model import train, train_val, MSEBCELoss, OmicAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
 from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset
 from .stats import get_pvals, fit_residuals, adjust_pvals
 from .plots import plot_cv_loss
@@ -460,11 +460,8 @@ def _run_protrider_standard(
                        presence_absence=config.presence_absence if config.n_layers == 1 else False,
                        model_type=config.analysis
                        )
-
-    if config.autoencoder_loss == "MSE":
-        criterion = MSEBCELoss(presence_absence=config.presence_absence, lambda_bce=config.lambda_presence_absence)
-    elif config.autoencoder_loss == "NLL":
-        criterion = NegativeBinomialLoss(presence_absence=config.presence_absence, lambda_bce=config.lambda_presence_absence)
+    
+    criterion = model.set_loss(autoencoder_loss = config.autoencoder_loss, lambda_presence_absence = config.lambda_presence_absence) 
     
     logger.info('Model:\n%s', model)
     logger.info('Device: %s', config.device_torch)
@@ -485,7 +482,9 @@ def _run_protrider_standard(
         final_loss = init_loss
 
     # 6. Compute residuals, pvals, zscores
-    logger.info('Computing statistics')
+    logger.info('Computing statistics') #TODO: move to stats
+    model_input = model if config.analysis != "protrider" else None
+    mu, sigma, df0 = fit_residuals(dataset, df_out, model_input, config)
     if config.analysis == "protrider":
         df_res = dataset.data - df_out  # log data - pred data
         mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
@@ -500,7 +499,7 @@ def _run_protrider_standard(
 
         if mu is None:
             # Fitting NB for outrider if it is not set yet
-            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
+            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64)) #TODO fro fraser
             mu, theta = model.get_dispersion_parameters()
 
     pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
@@ -721,8 +720,8 @@ def _run_protrider_cv(
     return result, model_info
 
 
-def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: ProtriderAutoencoder, criterion: MSEBCELoss, batch_size=None, use_cpu=True):
-
+def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAutoencoder, criterion: MSEBCELoss, batch_size=None, use_cpu=True):
+    
     # Save original device
     orig_device = next(model.parameters()).device
 
@@ -737,8 +736,8 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
 
     # Move model to CPU if requested
     model = model.to(device)
-    if model.encoder.prot_means is not None:
-        model.encoder.prot_means = model.encoder.prot_means.to(device)
+    if model.encoder.omic_means is not None:
+        model.encoder.omic_means = model.encoder.omic_means.to(device)
     X = X.to(device)
     mask = mask.to(device)
     if cov is not None:
@@ -765,6 +764,16 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
                 raw_x,
                 detached=True
             )
+        elif model.model_type == "fraser":
+            X_out = model(X, mask, cond=cov)
+            _, rho = model.get_dispersion_parameters()
+
+            loss, reconstruction_loss, bce_loss = criterion( 
+                (rho, torch.exp(X_out) ), # TODO size_factors?
+                raw_x,
+                detached=True
+            )
+            theta = rho #TODO
 
         # Presence/Absence extension
         df_presence = None
@@ -788,8 +797,8 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
     # Restore model back to original device
     if use_cpu:
         model = model.to(orig_device)
-        if model.encoder.prot_means is not None:
-            model.encoder.prot_means = model.encoder.prot_means.to(orig_device)
+        if model.encoder.omic_means is not None:
+            model.encoder.omic_means = model.encoder.omic_means.to(orig_device)
 
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 

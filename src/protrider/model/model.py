@@ -113,9 +113,9 @@ class ModelInfo:
 class ConditionalEnDecoder(nn.Module):
 
     def __init__(self, in_dim, out_dim, is_encoder, h_dim=None, n_layers=1,
-                 prot_means=None):
+                 omic_means=None):
         super().__init__()
-        self.prot_means = prot_means
+        self.omic_means = omic_means
 
         self.is_encoder = is_encoder
         self.n_layers = n_layers
@@ -125,7 +125,7 @@ class ConditionalEnDecoder(nn.Module):
             # if the model is a decoder, then we want to have trainable bias
             last_layer = nn.Linear(in_dim,
                                    out_dim,
-                                   bias=not is_encoder or prot_means is None)
+                                   bias=not is_encoder or omic_means is None)
             self.model = last_layer
 
         elif n_layers > 1:
@@ -136,17 +136,17 @@ class ConditionalEnDecoder(nn.Module):
                 modules.append(nn.Linear(h_dim, h_dim, bias=False))
                 modules.append(nn.ReLU())
             # if the model is a decoder, then we want to have trainable bias
-            last_layer = nn.Linear(h_dim, out_dim, bias=not is_encoder or prot_means is None)
+            last_layer = nn.Linear(h_dim, out_dim, bias=not is_encoder or omic_means is None)
             modules.append(last_layer)
             self.model = nn.Sequential(*modules)
 
         # if the model is a decoder, then the bias should be initialized to the protein means
-        if not is_encoder and prot_means is not None:
-            last_layer.bias.data.copy_(prot_means).squeeze(0)
+        if not is_encoder and omic_means is not None:
+            last_layer.bias.data.copy_(omic_means).squeeze(0)
 
     def forward(self, x, cond=None):
-        if self.is_encoder and (self.prot_means is not None):
-            x = x - self.prot_means
+        if self.is_encoder and (self.omic_means is not None):
+            x = x - self.omic_means
         if cond is not None:
             x = torch.cat([x, cond], -1)
         return self.model(x)
@@ -158,26 +158,32 @@ class ConditionalEnDecoder(nn.Module):
 ### decoder:(h+cov) x g
 ### output: s x g
 
-class ProtriderAutoencoder(nn.Module):
+class OmicAutoencoder(nn.Module): # HAS CHANGED!
     def __init__(self, in_dim, latent_dim, n_layers=1, n_cov=0, h_dim=None,
-                 prot_means=None, presence_absence=False, model_type="protrider"):
+                 omic_means=None, presence_absence=False, model_type="protrider"):
         super().__init__()
         self.model_type = model_type
         self.n_layers = n_layers
         self.presence_absence = presence_absence
         self.encoder = ConditionalEnDecoder(in_dim=in_dim + n_cov,
                                             out_dim=latent_dim, h_dim=h_dim, n_layers=n_layers,
-                                            is_encoder=True, prot_means=prot_means)
+                                            is_encoder=True, omic_means=omic_means)
 
         self.decoder = ConditionalEnDecoder(in_dim=latent_dim + n_cov,
                                             out_dim=in_dim,
                                             h_dim=h_dim, n_layers=n_layers,
-                                            is_encoder=False, prot_means=prot_means)
+                                            is_encoder=False, omic_means=omic_means)
         
-        if self.model_type == "outrider":
-            self.distribution = NegativeBinomialDistribution()
-            self.dispersion = Dispersion(self.distribution)
-            
+        if model_type != "protrider":
+            self.dispersion = Dispersion(analysis=model_type)
+        
+
+    def set_loss(self, autoencoder_loss = "MSE", lambda_presence_absence = 0.5): 
+        if autoencoder_loss == "MSE":
+            return MSEBCELoss(presence_absence=self.presence_absence, lambda_bce= lambda_presence_absence)
+        elif autoencoder_loss == "NLL":
+            return NegativeBinomialLoss(presence_absence=self.presence_absence, lambda_bce= lambda_presence_absence)
+    
 
     def forward(self, x, mask, cond=None):
         if self.presence_absence:
@@ -193,7 +199,7 @@ class ProtriderAutoencoder(nn.Module):
 
         return out
 
-    def initialize_wPCA(self, Vt_q, prot_means, n_cov=0):
+    def initialize_wPCA(self, Vt_q, omic_means, n_cov=0):
         if self.n_layers > 1:
             logger.warning('Initialization only possible for n_layers=1. Going back to random init...')
             return
@@ -210,11 +216,11 @@ class ProtriderAutoencoder(nn.Module):
 
         if self.model_type == "outrider":
             self.encoder.model.bias.data.copy_(0)
-        elif self.model_type == "protrider":
-            self.encoder.model.bias.data.copy_(-(Vt_q @ torch.from_numpy(prot_means).to(device).T).flatten())
+        elif self.model_type == "protrider" or self.model_type == "fraser": #TODO check in R
+            self.encoder.model.bias.data.copy_(-(Vt_q @ torch.from_numpy(omic_means).to(device).T).flatten())
 
         ## DECODER weights: (n_prots, q + n_cov), bias: (n_prot)
-        self.decoder.model.bias.data.copy_(torch.from_numpy(prot_means).squeeze(0))
+        self.decoder.model.bias.data.copy_(torch.from_numpy(omic_means).squeeze(0))
         cov_dec_init = self.decoder.model.weight.data[:, 0:n_cov]
         self.decoder.model.weight.data.copy_(
             torch.cat([Vt_q.T.to(device),
@@ -224,8 +230,9 @@ class ProtriderAutoencoder(nn.Module):
     def update_dispersion(self, x_true, x_pred):
         self.dispersion.update(x_true, x_pred)
 
-    def fit_dispersion(self, x_true, x_pred):
-        self.dispersion.fit(x_true, x_pred)
+    def fit_dispersion(self,*args, **kwargs): #NEW    
+        self.dispersion.fit(*args, **kwargs)
+
 
     def get_dispersion_parameters(self):
         """Get dispersion parameters (mu_scale, theta)"""
@@ -351,9 +358,9 @@ def _train_iteration(data_loader, model, criterion, optimizer):
     n_batches = 0
     for batch_idx, data in enumerate(data_loader):
         if model.model_type == "protrider":
-            x, mask, cov, prot_means = data
+            x, mask, cov, omic_means = data
         elif model.model_type == "outrider":
-            x, mask, cov, prot_means, raw_x, size_factors = data
+            x, mask, cov, omic_means, raw_x, size_factors = data
 
         # Restore grads and compute model out
         optimizer.zero_grad()
@@ -450,3 +457,5 @@ class NegativeBinomialLoss(nn.Module):
                     bce_loss.detach().cpu().numpy() if bce_loss is not None else None)
             
         return loss, nll, bce_loss
+
+
