@@ -69,3 +69,43 @@ def estimate_theta_robust_moments(
     )
 
     return torch.clamp(theta_estimates, min=theta_min, max=theta_max)
+
+
+def estimate_rho_robust_moments(K: torch.Tensor, N: torch.Tensor, rho_min: float = 1e-5, rho_max: float = 1 - 1e-5, pseudo_count: float = 1e-8,):
+    """
+    Robust method-of-moments estimation of rho for Beta-Binomial.
+
+    Parameters:
+        k : tensor (junctions, samples): split counts
+        n : tensor (junctions, samples): total counts
+    Returns:
+        rho : tensor (junctions,)
+    """
+
+    K = K.to(torch.float64) + pseudo_count
+    N = N.to(torch.float64) + 2 * pseudo_count
+
+    # equalize n across samples (per junction)
+    nM = torch.round(N.mean(dim=1))                     # (junctions,)
+    K_norm = torch.round((nM[:, None] / N) * K)         # rescale counts
+
+    N = K_norm.shape[1]                                 # number of samples
+
+    # first and second moments per junction
+    m1 = K_norm.sum(dim=1) / N
+    m2 = (K_norm * K_norm).sum(dim=1) / N
+
+    denom = nM * (m2 / m1 - m1 - 1) + m1
+
+    a = (nM * m1 - m2) / denom
+    b = ((nM - m1) * (nM - m2 / m1)) / denom
+
+    rho = 1.0 / (1.0 + a + b)
+
+    # fallback for invalid cases #TODO
+    invalid = (a < 0) | (b < 0) | torch.isnan(rho) | torch.isinf(rho)
+    rho[invalid] = rho_min
+
+    rho = torch.clamp(rho, rho_min, rho_max) #TODO
+
+    return rho

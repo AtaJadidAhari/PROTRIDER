@@ -7,7 +7,7 @@ import copy
 from typing import Union
 
 from protrider.stats import get_pvals, fit_residuals
-from .model import ProtriderAutoencoder, train, MSEBCELoss, NegativeBinomialLoss  # masked
+from .model import OmicAutoencoder, train, MSEBCELoss, NegativeBinomialLoss  # masked
 from protrider.datasets import ProtriderSubset, ProtriderDataset, OutriderDataset
 import logging
 
@@ -191,20 +191,25 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
 def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, device=torch.device('cpu'),
                presence_absence=False, model_type="protrider"):
     n_cov = dataset.covariates.shape[1]
-    n_prots = dataset.X.shape[1]
-    model = ProtriderAutoencoder(in_dim=n_prots, latent_dim=latent_dim, n_layers=n_layer, h_dim=h_dim, n_cov=n_cov,
-                                 prot_means=None if init_wPCA else dataset.prot_means_torch,
+    n_omics = dataset.X.shape[1] 
+    model = OmicAutoencoder(in_dim=n_omics, latent_dim=latent_dim, n_layers=n_layer, h_dim=h_dim, n_cov=n_cov,
+                                 omic_means=None if init_wPCA else dataset.omic_means_torch,
                                  presence_absence=presence_absence, model_type=model_type)
 
-    if model_type == "outrider":
-        model.dispersion.set_dispersion(model.distribution.init_train(dataset.X.T)[1])
+    if model_type == "outrider": #TODO  FRASER
+        model.dispersion.set_dispersion(model.dispersion.distribution.init_train(dataset.X.T)[1])  #NEW
+    elif model_type == "fraser":
+        K_torch = torch.tensor(dataset.K.values, dtype=torch.float64, device=device)
+        N_torch = torch.tensor(dataset.N.values, dtype=torch.float64, device=device)
+        model.dispersion.set_dispersion(model.dispersion.distribution.init_train(K_torch, N_torch)[1])
+    
 
     model.double().to(device)
     if init_wPCA:
         logger.info('\tInitializing model weights with PCA')
         dataset.perform_svd()
         Vt_q = dataset.Vt[:latent_dim]
-        model.initialize_wPCA(Vt_q, dataset.prot_means, n_cov)
+        model.initialize_wPCA(Vt_q, dataset.omic_means, n_cov)
     return model
 
 
@@ -262,10 +267,10 @@ def _inject_outliers(dataset, inj_freq=1e-3, inj_mean=3, inj_sd=1.6, device=torc
 
     # ds_injected.X = X_injected # why not just this?
     ds_injected.X = torch.where(dataset.torch_mask, dataset.X, X_injected).to(device)
-    ds_injected.prot_means = np.nanmean(ds_injected.X.detach().cpu(), axis=0, keepdims=1)
+    ds_injected.omic_means = np.nanmean(ds_injected.X.detach().cpu(), axis=0, keepdims=1)
 
-    ## PCA should be computed on ds_injected.X - prot_means
-    ds_injected.centered_log_data_noNA = ds_injected.X.detach().cpu().numpy() - ds_injected.prot_means
+    ## PCA should be computed on ds_injected.X - omic_means
+    ds_injected.centered_log_data_noNA = ds_injected.X.detach().cpu().numpy() - ds_injected.omic_means
     return ds_injected, outlier_mask
 
 

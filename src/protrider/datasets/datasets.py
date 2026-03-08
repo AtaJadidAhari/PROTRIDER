@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Iterable, Optional, Callable
+#from dpath import values
 import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
@@ -9,13 +10,14 @@ from abc import ABC
 from optht import optht
 import logging
 from .covariates import parse_covariates
-from .protein_intensities import read_protein_intensities, preprocess_protein_intensities
+from .protein_intensities import read, preprocess_protein_intensities
 from pydeseq2.preprocessing import deseq2_norm
 import pandas as pd
-import numpy as np
 import re
-from pathlib import Path
-import torch.nn.functional as F
+#from pathlib import Path
+#import torch.nn.functional as F
+import time
+
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,10 @@ class PCADataset(ABC):
         if self.s is None:
             self.perform_svd()
 
-        q = optht(self.centered_log_data_noNA, sv=self.s, sigma=None)
+        try:
+            q = optht(self.centered_log_data_noNA, sv=self.s, sigma=None) 
+        except ValueError as e:
+            q = 1
 
         if q < 2:
             logger.warning(f"Optimal latent space dimension is smaller than 2. Check your count matrix and"
@@ -70,7 +75,7 @@ class ProtriderDataset(Dataset, PCADataset):
         self.device = device
 
         # Read and preprocess protein intensities
-        unfiltered_data = read_protein_intensities(input_intensities, index_col, input_format)
+        unfiltered_data = read(input_intensities, index_col, input_format)
         self.data, self.raw_data, self.size_factors = preprocess_protein_intensities(
             unfiltered_data, log_func, maxNA_filter
         )
@@ -91,29 +96,29 @@ class ProtriderDataset(Dataset, PCADataset):
 
         
         # store protein means
-        self.prot_means = np.nanmean(self.data, axis=0, keepdims=1)
+        self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
 
         ## Center and mask NaNs in input
         self.mask = ~np.isfinite(self.data)
-        self.centered_log_data_noNA = self.data - self.prot_means
+        self.centered_log_data_noNA = self.data - self.omic_means
         self.centered_log_data_noNA = np.where(self.mask, 0, self.centered_log_data_noNA)
 
         # Input and output of autoencoder is:
         # uncentered data without NaNs, replacing NANs with means
-        self.X = self.centered_log_data_noNA + self.prot_means  ## same as data but without NAs
+        self.X = self.centered_log_data_noNA + self.omic_means  ## same as data but without NAs
 
         ## to torch
         self.X = torch.tensor(self.X)
         # self.X_target = self.X ### needed for outlier injection
         self.mask = np.array(self.mask.values)
         self.torch_mask = torch.tensor(self.mask)
-        self.prot_means_torch = torch.from_numpy(self.prot_means).squeeze(0)
+        self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
 
         ### Send data to cpu/gpu device
         self.X = self.X.to(device)
         self.torch_mask = self.torch_mask.to(device)
         self.covariates = self.covariates.to(device)
-        self.prot_means_torch = self.prot_means_torch.to(device)
+        self.omic_means_torch = self.omic_means_torch.to(device)
         # self.presence = (~self.torch_mask).long()
         self.raw_filtered = pd.DataFrame()
 
@@ -121,14 +126,14 @@ class ProtriderDataset(Dataset, PCADataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.prot_means_torch)
+        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch)
 
 
 class ProtriderSubset(Subset, PCADataset):
     def __init__(self, dataset, indices):
         super().__init__(dataset, indices)
-        self.prot_means = np.nanmean(self.data, axis=0, keepdims=1)
-        self.prot_means_torch = torch.from_numpy(self.prot_means).squeeze(0).to(dataset.device)
+        self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
+        self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0).to(dataset.device)
 
     @property
     def X(self):
@@ -178,8 +183,8 @@ class ProtriderSubset(Subset, PCADataset):
         dataset.torch_mask = self.torch_mask
         dataset.centered_log_data_noNA = self.centered_log_data_noNA
         dataset.covariates = self.covariates
-        dataset.prot_means = self.prot_means
-        dataset.prot_means_torch = self.prot_means_torch
+        dataset.omic_means = self.omic_means
+        dataset.omic_means_torch = self.omic_means_torch
         return dataset
 
 
@@ -193,7 +198,7 @@ class OutriderDataset(Dataset, PCADataset):
         super().__init__()
 
         # Read and preprocess protein intensities
-        self.data = read_protein_intensities(input_intensities, index_col)
+        self.data = read(input_intensities, index_col)
         # self.data, self.raw_data, self.size_factors = preprocess_protein_intensities(
         #     unfiltered_data, log_func, maxNA_filter
         # )
@@ -229,17 +234,17 @@ class OutriderDataset(Dataset, PCADataset):
         #### FINISHED PREPROCESSING
 
         # store protein means
-        self.prot_means = np.nanmean(self.data, axis=0, keepdims=1)
+        self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
 
         ## Center and mask NaNs in input
         self.mask = ~np.isfinite(self.data)
-        self.centered_log_data_noNA = self.data - self.prot_means
+        self.centered_log_data_noNA = self.data - self.omic_means
         self.centered_log_data_noNA = np.where(self.mask, 0, self.centered_log_data_noNA)
 
-        prot_means_df = pd.DataFrame({"xbar": np.ravel(self.prot_means), "geneID": self.data.columns})
+        omic_means_df = pd.DataFrame({"xbar": np.ravel(self.omic_means), "geneID": self.data.columns})
         # Input and output of autoencoder is:
         # uncentered data without NaNs, replacing NANs with means
-        # self.X = self.centered_log_data_noNA + self.prot_means  ## same as data but without NAs
+        # self.X = self.centered_log_data_noNA + self.omic_means  ## same as data but without NAs
         self.X = self.centered_log_data_noNA
 
         ## to torch
@@ -248,7 +253,7 @@ class OutriderDataset(Dataset, PCADataset):
 
         self.mask = np.array(self.mask.values)
         self.torch_mask = torch.tensor(self.mask)
-        self.prot_means_torch = torch.from_numpy(self.prot_means).squeeze(0)
+        self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
 
         # Read and preprocess covariates
         if sa_file is not None and cov_used is not None:
@@ -269,7 +274,7 @@ class OutriderDataset(Dataset, PCADataset):
         self.X = self.X.to(device)
         self.torch_mask = self.torch_mask.to(device)
         self.covariates = self.covariates.to(device)
-        self.prot_means_torch = self.prot_means_torch.to(device)
+        self.omic_means_torch = self.omic_means_torch.to(device)
         self.raw_x = self.raw_x.to(device)
         self.size_factors = torch.tensor(self.size_factors).to(device)
         # self.presence = (~self.torch_mask).long()
@@ -278,7 +283,7 @@ class OutriderDataset(Dataset, PCADataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.prot_means_torch, self.raw_x[idx], self.size_factors[idx])
+        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, self.raw_x[idx], self.size_factors[idx])
 
     def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentage=0.05):
         """
@@ -410,3 +415,139 @@ class OutriderDataset(Dataset, PCADataset):
         fpkm = fpkm.div(library_size, axis=1)
 
         return fpkm
+
+class OmicDataset(Dataset):
+    def __new__(cls, analysis, *args, **kwargs):
+        if cls is OmicDataset:   # Only auto-redirect when calling the base class
+            if analysis == "fraser":
+                return FraserDataset(*args, **kwargs)
+            elif analysis == "outrider":
+                return OutriderDataset(*args, **kwargs)
+            elif analysis == "protrider":
+                return ProtriderDataset(*args, **kwargs)
+            else:
+                raise ValueError(f"Unknown analysis type: {analysis}")
+        return super().__new__(cls)
+    #def __init__(self, analysis):
+    #    self.analysis = analysis  # needed?
+    def __len__(self):
+        pass
+    def __getitem__(self, idx):
+        pass
+
+class FraserDataset(Dataset, PCADataset): # inherit omic?
+    def __init__(self, split_reads: str, unsplit_reads: str, sa_file: Optional[str] = None,
+                 cov_used: Optional[list] = None):
+        # read split and unsplit reads
+        print("Reading split and unsplit reads")
+        self.split_reads = read(input_intensities=split_reads, input_format = 'introns_as_rows') # ASK: index col??
+        self.unsplit_reads = read(input_intensities=unsplit_reads, input_format = 'introns_as_rows')  # ASK: index col??
+        self.samples_cols = self.split_reads.columns.intersection(self.unsplit_reads.columns) 
+        
+
+        print("Calculating K and N")
+        start = time.time()
+        # calculate K and N
+        self.K = self.calculate_K()
+        self.N = self.calculate_N() 
+    
+        duration = time.time() - start
+        print(f"K and N calculated in {duration:.2f} seconds.")
+
+        # calculate Jaccard index
+        print("Calculating Jaccard index")
+        start = time.time()
+        self.jaccard_index = self.K / self.N
+        
+        # Jaccard filter expression
+        self.filter_expression_jaccard()
+        self.jaccard_index = self.jaccard_index.loc[self.passed_expression, :]
+        duration = time.time() - start
+        print(f"Jaccard index calculated and filtered in {duration:.2f} seconds.")
+
+        # create X and center it
+        self.data = self.create_data()
+    
+        self.data =  pd.DataFrame(self.data, index=self.samples_cols, columns=self.split_reads.index)
+        
+        self.X = torch.tensor(self.data.to_numpy(), dtype=torch.float64) - torch.nanmean(torch.tensor(self.data.to_numpy(), dtype=torch.float64), dim=0, keepdim=True)
+
+        self.mask = ~np.isfinite(self.data)
+        self.mask = np.array(self.mask.values)
+        self.X = torch.nan_to_num(self.X, nan=0.0, posinf=0.0, neginf=0.0)
+        self.torch_mask = torch.tensor(self.mask)
+        self.centered_log_data_noNA = self.X.cpu().numpy()
+        self.omic_means = np.nanmean(self.data, axis=0, keepdims=1) 
+        self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
+        self.raw_filtered = copy.deepcopy(self.data)
+        self.raw_x = torch.tensor(self.raw_filtered.values)
+
+        # Input and output of autoencoder is:
+        # uncentered data without NaNs, replacing NANs with means
+        #self.X = self.centered_log_data_noNA + self.junc_means  # ASK
+        # Read and preprocess covariates
+        if sa_file is not None and cov_used is not None:
+            try:
+                self.covariates, self.centered_covariates_noNA = parse_covariates(sa_file, cov_used, self.data.index)
+                self.covariates = torch.from_numpy(self.covariates)
+                self.centered_covariates_noNA = torch.from_numpy(self.centered_covariates_noNA)
+            except ValueError:
+                logger.warning("No valid covariates found after parsing.")
+                self.covariates = torch.empty(self.data.shape[0], 0)
+                self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
+        else:
+            self.covariates = torch.empty(self.data.shape[0], 0)
+            self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
+
+    def __getitem__(self, idx):
+        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, self.raw_x[idx])
+
+    
+    def calculate_K(self):
+        return self.split_reads[self.samples_cols]
+    
+    def calculate_N(self): 
+        result = np.vstack([
+            (
+            # 1) sum of split reads with current startID
+            self.split_reads.loc[self.split_reads["startID"] == row.startID,self.samples_cols].sum()
+            # 2) sum of split reads with current endID
+            + 
+            self.split_reads.loc[self.split_reads["endID"] == row.endID,self.samples_cols].sum()
+            # 3) sum of unsplit reads with spliceSiteID = current startID
+            + 
+            self.unsplit_reads.loc[self.unsplit_reads["spliceSiteID"] == row.startID,self.samples_cols].sum()
+            # 4) sum of unsplit reads with spliceSiteID = current endID
+            + 
+            self.unsplit_reads.loc[self.unsplit_reads["spliceSiteID"] == row.endID,self.samples_cols].sum()
+            ).to_numpy()
+            for row in self.split_reads.itertuples(index=False)
+        ])
+        result_df = pd.DataFrame(result,columns=self.samples_cols)
+        return result_df - self.K
+
+    def filter_expression_jaccard(self, minExpressionInOneSample=20, quantile=0.95, quantileMinExpression=10):
+        # Assure NP array
+        cts = np.asarray(self.K)
+        ctsN = np.asarray(self.N)
+
+        # Compute cutoffs
+        max_count = cts.max(axis=1)
+        quantile_value_n = np.quantile(ctsN, quantile, axis=1)
+
+        # Expression filter
+        passed_expression = (
+            (max_count >= minExpressionInOneSample) &
+            (quantile_value_n >= quantileMinExpression)
+        )
+        self.passed_expression = passed_expression
+    
+    def create_data(self, pseudocount= 0.1):
+        X = (self.K + pseudocount) / (self.N + 2 * pseudocount)
+        X_logit = np.log(X / (1 - X))
+        X_logit = X_logit.T
+        return X_logit
+        
+
+
+

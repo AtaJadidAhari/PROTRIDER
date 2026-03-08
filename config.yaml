@@ -3,6 +3,8 @@ out_dir: output
 
 # csv input file containing intensities. Columns are samples and rows are proteins.
 input_intensities: "sample_data/protrider_sample_dataset.tsv"
+split_reads: "/s/project/py_fraser/exported_counts/s.tsv"
+unsplit_reads: "/s/project/py_fraser/exported_counts/u.tsv"
 
 # column name in the input file indicating the column name containing the protein names/IDs
 index_col: "protein_ID"
@@ -17,7 +19,7 @@ max_allowed_NAs_per_protein: 0.3
 # set this to null if the data is already log-transformed
 #log_func_name: "log"
 
-analysis: "protrider"
+analysis: "fraser"
 fpkmCutoff: 1
 # gtf: "/s/genomes/human/hg38/gencode.v34/gencode.v34.annotation.gtf.gz"
 gtf: "/s/project/py_outrider/demo_ae/Data/gencode_annotation_trunc.gtf"

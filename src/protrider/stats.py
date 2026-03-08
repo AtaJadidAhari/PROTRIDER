@@ -1,6 +1,7 @@
 import numpy as np
 import scipy
 import tqdm
+import torch
 from joblib import Parallel, delayed
 import logging
 
@@ -8,15 +9,49 @@ __all__ = ["fit_residuals", "get_pvals", "adjust_pvals"]
 
 logger = logging.getLogger(__name__)
 
-def fit_residuals(res, dis='gaussian', n_jobs=-1):
-    if dis == 'gaussian':
-        sigma = np.nanstd(res, ddof=1, axis=0)
-        mu = np.nanmean(res, axis=0)
+def fit_residuals(dataset, df_out, model, config):
+    if config.analysis == 'protrider':
+        df_res = dataset.data - df_out  # log data - pred data
+        res = df_res.values
+        dis = config.pval_dist
+        #n_jobs = config.n_jobs
+        if dis == 'gaussian':
+            sigma = np.nanstd(res, ddof=1, axis=0)
+            mu = np.nanmean(res, axis=0)
+            df0 = None
+        elif dis == 't':
+            mu, sigma, df0 = _fit_t(res)
+        else:
+            raise ValueError(f"Unknown distribution: {dis}")
+        
+    elif config.analysis == "outrider":
+        df_out_clamped = np.clip(df_out, -700, 700)
+        df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
+        df_out = df_res
+        sigma = None
         df0 = None
-    elif dis == 't':
-        mu, sigma, df0 = _fit_t(res)
-    else:
-        raise ValueError(f"Unknown distribution: {dis}")
+
+        mu, theta = model.get_dispersion_parameters()
+
+        if mu is None:
+            # Fitting NB for outrider if it is not set yet
+            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64)) 
+            mu, theta = model.get_dispersion_parameters() #new
+        sigma = theta
+
+    elif config.analysis == "fraser": #TODO
+        sigma = None
+        df0 = None
+
+        mu, rho = model.get_dispersion_parameters()
+        if mu is None:
+            # Fitting BB for fraser if it is not set yet
+            model.fit_dispersion(torch.tensor(dataset.K.values, dtype=torch.float64), 
+                                torch.tensor(dataset.N.values, dtype=torch.float64),
+                                torch.tensor(df_out.values, dtype=torch.float64)) 
+            mu, rho = model.get_dispersion_parameters()
+        sigma = rho
+
     return mu, sigma, df0
 
 

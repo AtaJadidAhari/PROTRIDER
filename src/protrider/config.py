@@ -29,6 +29,10 @@ class ProtriderConfig:
     out_dir: Optional[str] = None  # File path or None
     sample_annotation: Optional[str] = None  # File path or None
 
+    # FRASER
+    split_reads: Optional[str] = None
+    unsplit_reads: Optional[str] = None
+
     # OUTRIDER params
     fpkmCutoff: Optional[int] =  1
     gtf: Optional[str] = "sample_data/gencode_annotation_trunc.gtf"

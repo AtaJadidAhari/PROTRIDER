@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def read_protein_intensities(input_intensities: str, index_col: str, input_format: str = "proteins_as_rows") -> pd.DataFrame:
+def read(input_intensities: str, index_col: str = None, input_format: str = "proteins_as_rows") -> pd.DataFrame:
     """Read protein intensities from a file.
     
     Args:
@@ -33,7 +33,12 @@ def read_protein_intensities(input_intensities: str, index_col: str, input_forma
         if suffixes[-1] == '.csv':
             temp_data = pd.read_csv(input_intensity, compression=compression).set_index(index_col)
         elif suffixes[-1] == '.tsv':
-            temp_data = pd.read_csv(input_intensity, sep='\t', compression=compression).set_index(index_col)
+            temp_data = pd.read_csv(input_intensity, sep='\t', compression=compression)
+            if temp_data.shape[1] == 1:
+                temp_data = pd.read_csv(input_intensity, sep=',', compression=compression)
+            print("TSV read with head: ", temp_data.head())
+            if index_col is not None:
+                temp_data = temp_data.set_index(index_col)
         elif suffixes[-1] == '.parquet':
             temp_data = pd.read_parquet(input_intensity).set_index(index_col)
         else:
@@ -50,6 +55,8 @@ def read_protein_intensities(input_intensities: str, index_col: str, input_forma
         # Already in the correct format, just set names
         data.index.name = 'sampleID'
         data.columns.name = 'proteinID'
+    elif input_format == 'introns_as_rows': # TODO 
+        pass
     else:
         raise ValueError(f"Invalid input_format: {input_format}. Must be 'proteins_as_rows' or 'proteins_as_columns'")
     
