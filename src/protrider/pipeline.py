@@ -482,10 +482,10 @@ def _run_protrider_standard(
         final_loss = init_loss
 
     # 6. Compute residuals, pvals, zscores
-    logger.info('Computing statistics') #TODO: move to stats
+    logger.info('Computing statistics')
     model_input = model if config.analysis != "protrider" else None
-    mu, sigma, df0 = fit_residuals(dataset, df_out, model_input, config)
-    if config.analysis == "protrider":
+    mu, sigma, df0, df_res = fit_residuals(dataset, df_out, model_input, config)
+    """if config.analysis == "protrider":
         df_res = dataset.data - df_out  # log data - pred data
         mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
     elif config.analysis == "outrider":
@@ -500,7 +500,7 @@ def _run_protrider_standard(
         if mu is None:
             # Fitting NB for outrider if it is not set yet
             model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64)) #TODO fro fraser
-            mu, theta = model.get_dispersion_parameters()
+            mu, theta = model.get_dispersion_parameters()"""
 
     pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
                          res=df_res.values,

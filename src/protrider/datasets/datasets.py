@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Iterable, Optional, Callable
+from warnings import filters
 #from dpath import values
 import numpy as np
 import torch
@@ -17,6 +18,7 @@ import re
 #from pathlib import Path
 #import torch.nn.functional as F
 import time
+import pyranges as pr
 
 
 
@@ -481,6 +483,12 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
         self.raw_filtered = copy.deepcopy(self.data)
         self.raw_x = torch.tensor(self.raw_filtered.values)
+        self.intron_ranges = pd.DataFrame({
+            "Chromosome": self.split_reads["seqnames"],
+            "Start": self.split_reads["start"],
+            "End": self.split_reads["end"],
+            "Strand": self.split_reads["strand"],
+        })
 
         # Input and output of autoencoder is:
         # uncentered data without NaNs, replacing NANs with means
@@ -549,5 +557,34 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         return X_logit
         
 
+    def annotate_junctions(self, txdb_genes: pd.DataFrame, orgdb: pd.DataFrame, feature="SYMBOL", feature_name="hgnc_symbol", keytype="ENTREZID", filters={}):
+        # one input 
+        anno = txdb_genes.copy()
+        tmp = txdb_genes[["gene_id"]].merge(orgdb, left_on="gene_id", right_on=keytype, how="left")
+        cols = ["gene_id", feature] + list(filters.keys())
+        tmp = tmp[cols]
 
+        tmp["include"] = True
+        for col, allowed in filters.items():
+            tmp.loc[~tmp[col].isin(allowed), "include"] = False
+        tmp = tmp[tmp["include"]]
 
+        anno = anno.loc[tmp.index].copy()
+        anno[feature_name] = tmp[feature].values
+        anno = anno.dropna(subset=[feature_name])
+
+        # convert to PyRanges
+        anno_pr = pr.PyRanges(anno)
+
+        # dataset intron coordinates
+        gr = pr.PyRanges(self.intron_ranges)
+
+        overlaps = gr.join(anno_pr)
+
+        if overlaps.df.empty:
+            self.feature_metadata[feature_name] = None
+            return
+
+        grouped = (overlaps.df.groupby("index")[feature_name].apply(lambda x: ";".join(sorted(set(x)))))
+
+        self.feature_metadata[feature_name] = grouped
