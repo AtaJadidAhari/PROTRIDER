@@ -110,11 +110,6 @@ class TestPipelineFRASER:
         plt.show()
 
 
-test_fraser = TestPipelineFRASER()
-test_fraser.test_run("/s/project/py_fraser/PROTRIDER/config.yaml")
-
-
-
 #residuals --> might be different for fraser, check if we can reuse the same code
 #fit_residuals
 # annotate genes --> check in R using a GTF file (library exists?)
