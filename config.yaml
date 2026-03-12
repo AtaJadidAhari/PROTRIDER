@@ -3,8 +3,8 @@ out_dir: output
 
 # csv input file containing intensities. Columns are samples and rows are proteins.
 input_intensities: "sample_data/protrider_sample_dataset.tsv"
-split_reads: "/s/project/py_fraser/exported_counts/s.tsv"
-unsplit_reads: "/s/project/py_fraser/exported_counts/u.tsv"
+split_reads: "sample_data/exported_counts/s.tsv"
+unsplit_reads: "sample_data/exported_counts/u.tsv"
 
 # column name in the input file indicating the column name containing the protein names/IDs
 index_col: "protein_ID"

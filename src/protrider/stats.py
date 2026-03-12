@@ -39,9 +39,10 @@ def fit_residuals(dataset, df_out, model, config):
             mu, theta = model.get_dispersion_parameters() #new
         sigma = theta
 
-    elif config.analysis == "fraser": #TODO
+    elif config.analysis == "fraser": 
         sigma = None
         df0 = None
+        df_res = df_out # TODO
 
         mu, rho = model.get_dispersion_parameters()
         if mu is None:
@@ -52,14 +53,14 @@ def fit_residuals(dataset, df_out, model, config):
             mu, rho = model.get_dispersion_parameters()
         sigma = rho
 
-    return mu, sigma, df0
+    return mu, sigma, df0, df_res
 
 
 def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian', n_jobs=-1):
     hows = ('two-sided', 'left', 'right')
     if not how in hows:
         raise ValueError(f'Method should be in <{hows}>')
-    dists = ('gaussian', 't', 'nb')
+    dists = ('gaussian', 't', 'nb', 'bb') 
     if not dis in dists:
         raise ValueError(f'Distribution should be in <{dists}>')
 
@@ -71,6 +72,8 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
     elif dis == 'nb':
         z, _, _, _ = calc_effect(x_true, res, "zscores")
         pvals = get_pv_nb(counts=x_true, res=res, mu=mu, theta=theta, how=how)
+    elif dis == 'bb': #TODO for fraser
+        pvals, z = get_pv_bb(counts=x_true, res=res, mu=mu, rho=sigma, how=how) # TODO implement get_pv_bb
 
     return pvals, z
 
