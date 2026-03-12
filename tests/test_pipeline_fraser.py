@@ -2,9 +2,8 @@
 Tests for FRASER pipeline
 """
 
-import pandas as pd#
+import pandas as pd
 import torch
-#import tempfile
 import numpy as np
 import matplotlib.pyplot as plt
 from protrider.config import load_config

@@ -32,7 +32,8 @@ dependencies = [
     'seaborn',
     'plotnine',
     'pyarrow',
-    'fastparquet'
+    'fastparquet',
+    'pyranges'
 ]
 
 [project.urls]
