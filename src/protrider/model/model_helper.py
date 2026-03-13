@@ -1,13 +1,13 @@
 import warnings
-from networkx import config
 import numpy as np
 import pandas as pd
 from sklearn.metrics import precision_recall_curve, auc
 import torch
 import copy
-from typing import Union
+from typing import Union, Optional
 
 from protrider.stats import get_pvals, fit_residuals
+from protrider.config import load_config, ProtriderConfig
 from .model import OmicAutoencoder, train, MSEBCELoss, NegativeBinomialLoss  # masked
 from protrider.datasets import ProtriderSubset, ProtriderDataset, OutriderDataset
 import logging
@@ -24,8 +24,13 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                     pval_sided='two-sided', pval_dist='gaussian',
                     out_dir=None, device=torch.device('cpu'),
                     presence_absence=False, lambda_bce=1.,
-                    model_type='protrider', loss_fn="MSE", n_jobs=-1
+                    model_type='protrider', loss_fn="MSE", n_jobs=-1,
+                    config: Optional[Union[ProtriderConfig, str]] = None
                     ):
+    # Load config from yaml path if a string is provided
+    if isinstance(config, str):
+        config = load_config(config)
+
     dataset.perform_svd()
     q = dataset.find_enc_dim_optht()
     enc_search_results =  pd.DataFrame(columns=["encod_dim", "aucpr"])
@@ -72,8 +77,11 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         else:
             X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
             X_in[injected_dataset.mask] = np.nan
-            model_input = model if config.analysis != "protrider" else None
-            mu, sigma, df0, res = fit_residuals(X_in, X_out, model_input, config)
+            analysis = config.analysis if config is not None else model_type
+            model_input = model if analysis != "protrider" else None
+            X_out_df = pd.DataFrame(X_out, index=injected_dataset.data.index,
+                                    columns=injected_dataset.data.columns)
+            mu, sigma, df0, res = fit_residuals(injected_dataset, X_out_df, model_input, config)
 
             """if model.model_type == "protrider":
                 res = X_in - X_out
