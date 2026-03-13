@@ -1,4 +1,5 @@
 import warnings
+from networkx import config
 import numpy as np
 import pandas as pd
 from sklearn.metrics import precision_recall_curve, auc
@@ -71,7 +72,10 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         else:
             X_in = copy.deepcopy(injected_dataset.X).detach().cpu().numpy()
             X_in[injected_dataset.mask] = np.nan
-            if model.model_type == "protrider":
+            model_input = model if config.analysis != "protrider" else None
+            mu, sigma, df0, res = fit_residuals(X_in, X_out, model_input, config)
+
+            """if model.model_type == "protrider":
                 res = X_in - X_out
                 mu, sigma, df0 = fit_residuals(res=res, dis=pval_dist, n_jobs=n_jobs)
             elif model.model_type == "outrider":
@@ -86,7 +90,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
                 if mu is None:
                     # Fitting NB for outrider if it is not set yet
                     model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
-                    mu, theta = model.get_dispersion_parameters()
+                    mu, theta = model.get_dispersion_parameters()"""
             pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
                                  res=res,
                                  mu=mu,

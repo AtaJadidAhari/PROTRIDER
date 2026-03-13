@@ -670,10 +670,15 @@ def _run_protrider_cv(
             # 8. Fit residual distribution on train-val set
             logger.info(
                 'Estimating residual distribution parameters on train-val set')
-            df_res_val = val_subset.data - df_out_val  # log data - pred data
-            df_res_train = train_subset.data - df_out_train  # log data - pred data
-            mu, sigma, df0 = fit_residuals(
-                pd.concat([df_res_train, df_res_val]).values, dis=config.pval_dist, n_jobs=config.n_jobs)
+            #df_res_val = val_subset.data - df_out_val  # log data - pred data
+            #df_res_train = train_subset.data - df_out_train  # log data - pred data
+
+            mu, sigma, df0, df_res = fit_residuals(pd.concat([val_subset.data, train_subset.data]).values, 
+                                                   pd.concat([df_out_val, df_out_train]).values
+                                                   , None , config)
+    
+            #mu, sigma, df0 = fit_residuals(
+            #    pd.concat([df_res_train, df_res_val]).values, dis=config.pval_dist, n_jobs=config.n_jobs)
             pvals, Z = get_pvals(x_true=dataset.raw_filtered.values, res=df_res_test.values, mu=mu,
                                  sigma=sigma, df0=df0, how=config.pval_sided, n_jobs=config.n_jobs)
             pvals_list.append(pvals)
@@ -692,7 +697,8 @@ def _run_protrider_cv(
         Z = np.concatenate(Z_list)
     else:
         logger.info('Estimating residual distribution parameters')
-        mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
+        mu, sigma, df0, df_res = fit_residuals(test_subset, df_out.values, None , config)
+        #mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
         pvals, Z = get_pvals(x_true=dataset.raw_filtered.values, res=df_res.values, mu=mu, sigma=sigma, df0=df0,
                              how=config.pval_sided, n_jobs=config.n_jobs)
         # Repeat df0 for each sample in the output
