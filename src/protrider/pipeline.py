@@ -446,6 +446,7 @@ def _run_protrider_standard(
                         model_type=config.analysis,
                         loss_fn=config.autoencoder_loss,
                         n_jobs=config.n_jobs,
+                        config=config,
                         )
 
     logger.info(
@@ -609,7 +610,8 @@ def _run_protrider_cv(
                             device=config.device_torch,
                             presence_absence=config.presence_absence,
                             lambda_bce=config.lambda_presence_absence,
-                            n_jobs=config.n_jobs
+                            n_jobs=config.n_jobs,
+                            config=config,
                             )
         logger.info(
             f'Latent dimension found with method {config.find_q_method}: {q}')
@@ -673,9 +675,10 @@ def _run_protrider_cv(
             #df_res_val = val_subset.data - df_out_val  # log data - pred data
             #df_res_train = train_subset.data - df_out_train  # log data - pred data
 
-            mu, sigma, df0, df_res = fit_residuals(pd.concat([val_subset.data, train_subset.data]).values, 
-                                                   pd.concat([df_out_val, df_out_train]).values
-                                                   , None , config)
+            train_val_subset = ProtriderSubset.concat([val_subset, train_subset])
+            mu, sigma, df0, df_res = fit_residuals(train_val_subset,
+                                                   pd.concat([df_out_val, df_out_train]),
+                                                   None, config)
     
             #mu, sigma, df0 = fit_residuals(
             #    pd.concat([df_res_train, df_res_val]).values, dis=config.pval_dist, n_jobs=config.n_jobs)
@@ -697,7 +700,7 @@ def _run_protrider_cv(
         Z = np.concatenate(Z_list)
     else:
         logger.info('Estimating residual distribution parameters')
-        mu, sigma, df0, df_res = fit_residuals(test_subset, df_out.values, None , config)
+        mu, sigma, df0, df_res = fit_residuals(dataset, df_out, None, config)
         #mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
         pvals, Z = get_pvals(x_true=dataset.raw_filtered.values, res=df_res.values, mu=mu, sigma=sigma, df0=df0,
                              how=config.pval_sided, n_jobs=config.n_jobs)

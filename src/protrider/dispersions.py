@@ -24,7 +24,7 @@ class Dispersion():
 
 
 class OutriderDispersion():
-    def __init__(self, distribution):
+    def __init__(self, distribution: Optional[str] = None):
         if distribution is None:
             distribution = NegativeBinomialDistribution()
         #super().__init__(analysis='outrider', distribution=distribution)
