@@ -481,10 +481,13 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         self.centered_log_data_noNA = self.X.cpu().numpy()
         self.omic_means = np.nanmean(self.data, axis=0, keepdims=1) 
         self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
+        self.X = torch.tensor(self.centered_log_data_noNA + self.omic_means, dtype=torch.float64) #TEST
         self.raw_filtered = copy.deepcopy(self.data)
         self.raw_x = torch.tensor(self.raw_filtered.values)
         self.intron_ranges = pd.DataFrame({
             "Chromosome": self.split_reads["seqnames"],
+            "StartId": self.split_reads["startID"],
+            "EndId": self.split_reads["endID"],
             "Start": self.split_reads["start"],
             "End": self.split_reads["end"],
             "Strand": self.split_reads["strand"],
@@ -557,34 +560,102 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         return X_logit
         
 
-    def annotate_junctions(self, txdb_genes: pd.DataFrame, orgdb: pd.DataFrame, feature="SYMBOL", feature_name="hgnc_symbol", keytype="ENTREZID", filters={}):
-        # one input 
-        anno = txdb_genes.copy()
-        tmp = txdb_genes[["gene_id"]].merge(orgdb, left_on="gene_id", right_on=keytype, how="left")
-        cols = ["gene_id", feature] + list(filters.keys())
-        tmp = tmp[cols]
+    def annotate_junctions(self, gtf_file: str, feature_name: str = "hgnc_symbol"):
+        """Annotate junctions with gene symbols and reference overlap status.
 
-        tmp["include"] = True
-        for col, allowed in filters.items():
-            tmp.loc[~tmp[col].isin(allowed), "include"] = False
-        tmp = tmp[tmp["include"]]
+        Adds two columns to self.intron_ranges:
+          - feature_name (default 'hgnc_symbol'): semicolon-joined gene symbols from
+            overlapping genes in the GTF; NA if no overlap.
+          - 'annotatedJunction': 'both' (exact intron match), 'start' (only 5' end
+            matches), 'end' (only 3' end matches), or 'none'.
 
-        anno = anno.loc[tmp.index].copy()
-        anno[feature_name] = tmp[feature].values
-        anno = anno.dropna(subset=[feature_name])
+        Parameters
+        ----------
+        gtf_file : str
+            Path to a GTF annotation file.
+        feature_name : str
+            Column name for the gene symbol annotation. Default: 'hgnc_symbol'.
+        """
+        gtf = pr.read_gtf(gtf_file)
+        n = len(self.intron_ranges)
 
-        # convert to PyRanges
-        anno_pr = pr.PyRanges(anno)
+        #  1. hgnc_symbol 
+        genes_df = (
+            gtf[gtf.Feature == "gene"]
+            .df[["Chromosome", "Start", "End", "Strand", "gene_name"]]
+            .drop_duplicates()
+            .assign(Strand=lambda d: d["Strand"].astype(str))
+        )
+        genes_pr = pr.PyRanges(genes_df)
 
-        # dataset intron coordinates
-        gr = pr.PyRanges(self.intron_ranges)
+        junc_df = self.intron_ranges[["Chromosome", "Start", "End", "Strand"]].copy()
+        junc_df["Start"] = junc_df["Start"] - 1  # converting 1-based (R/GRanges) to 0-based (pyranges)
+        junc_df["junction_idx"] = np.arange(n)
+        junctions_pr = pr.PyRanges(junc_df)
+        strand_kw = {"strandedness": "same"} if (junctions_pr.stranded and genes_pr.stranded) else {}
+        joined = junctions_pr.join(genes_pr, **strand_kw)
+        if not joined.df.empty:
+            symbol_map = (
+                joined.df
+                .groupby("junction_idx")["gene_name"]
+                .apply(lambda x: ";".join(sorted(set(x.dropna()))))
+            )
+            self.intron_ranges[feature_name] = pd.Series(np.arange(n)).map(symbol_map).values
+        else:
+            self.intron_ranges[feature_name] = pd.NA
 
-        overlaps = gr.join(anno_pr)
+        #  2. annotatedJunction 
+        # All unique reference introns from GTF
+        known_introns_df = (
+            gtf.features.introns(by="transcript")
+            .df[["Chromosome", "Start", "End", "Strand", "gene_name"]]
+            .drop_duplicates()
+            .reset_index(drop=True)
+            .assign(Strand=lambda d: d["Strand"].astype(str))
+        )
+        # FDS junctions that exactly match a reference intron
+        exact_hits = junc_df.merge(
+            known_introns_df, on=["Chromosome", "Start", "End", "Strand"], how="inner"
+        )
+        known_idx = exact_hits["junction_idx"].values
 
-        if overlaps.df.empty:
-            self.feature_metadata[feature_name] = None
-            return
+        # Median split-read count per junction across samples
+        median_counts = np.median(self.K.values, axis=1)  # (n_junctions,)
 
-        grouped = (overlaps.df.groupby("index")[feature_name].apply(lambda x: ";".join(sorted(set(x)))))
+        # Reference anno_pr: known FDS junctions sorted by median count descending
+        is_known = np.zeros(n, dtype=bool)
+        is_known[known_idx] = True
+        anno_df = junc_df[is_known][["Chromosome", "Start", "End", "Strand"]].copy()
+        # Add median counts where the GTF intron was observed in FDS
+ 
+        anno_df["medianCount"] = median_counts[is_known]
+        anno_df["fds_order"] = np.where(is_known)[0]
+        
+        annotations = np.full(n, "none", dtype=object)
+        anno_pr = pr.PyRanges(anno_df)
+        strand_kw["how"] = "left" #NEW
 
-        self.feature_metadata[feature_name] = grouped
+        ov_df = junctions_pr.join(anno_pr, **strand_kw).df  # right coords become Start_b / End_b
+        # Keeping only the highest-count reference intron per junction
+
+        # Then sort by medianCount first, fds_order second
+        ov_df = ov_df.sort_values(["medianCount", "fds_order"],ascending=[False, True])   # highest count first, lowest FDS index first for ties
+        print("Before choosing in ov_df: ")
+        print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
+        ov_df = ov_df.drop_duplicates(subset="junction_idx", keep="first")
+        print("After choosing in ov_df: ")
+        print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
+        #ov_df = ov_df.sort_values("medianCount", ascending=False)
+        #ov_df = ov_df.drop_duplicates(subset="junction_idx", keep="first")
+
+        s = ov_df["Start"] == ov_df["Start_b"]
+        e = ov_df["End"]   == ov_df["End_b"]
+        ov_df["annotatedJunction"] = np.select(
+            [s & e, s & ~e, ~s & e],
+            ["both", "start", "end"],
+            default="none",
+        )
+        idx = ov_df["junction_idx"].astype(int).values
+        annotations[idx] = ov_df["annotatedJunction"].values
+
+        self.intron_ranges["annotatedJunction"] = annotations
