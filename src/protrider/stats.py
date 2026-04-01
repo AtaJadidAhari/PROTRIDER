@@ -42,8 +42,7 @@ def fit_residuals(dataset, df_out, model, config):
     elif config.analysis == "fraser": 
         sigma = None
         df0 = None
-        df_res = df_out # TODO
-
+        df_res = None
         mu, rho = model.get_dispersion_parameters()
         if mu is None:
             # Fitting BB for fraser if it is not set yet
@@ -52,6 +51,7 @@ def fit_residuals(dataset, df_out, model, config):
                                 torch.tensor(df_out.values, dtype=torch.float64)) 
             mu, rho = model.get_dispersion_parameters()
         sigma = rho
+        df_res = mu # ASK: duplicates?
 
     return mu, sigma, df0, df_res
 
@@ -72,9 +72,8 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
     elif dis == 'nb':
         z, _, _, _ = calc_effect(x_true, res, "zscores")
         pvals = get_pv_nb(counts=x_true, res=res, mu=mu, theta=theta, how=how)
-    elif dis == 'bb': #TODO for fraser
-        pvals, z = get_pv_bb(counts=x_true, res=res, mu=mu, rho=sigma, how=how) # TODO implement get_pv_bb
-
+    elif dis == 'bb':
+        pvals, z = get_pv_bb(K=x_true, N=res, mu=mu, rho=sigma, how=how) 
     return pvals, z
 
 def adjust_pvals(pvals, method='bh'):
@@ -173,6 +172,58 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
         return 1 - pless + dval
     else:  # two-sided
         return 2 * np.minimum(np.minimum(pless, 1 - pless + dval), 0.5)
+
+def get_pv_bb(K, N, mu, rho, how='two-sided'):
+    """
+    Compute Beta-Binomial p-values.
+
+    Parameters:
+        K:      observed split reads, shape (samples, junctions)
+        N:      total reads / exposure, shape (samples, junctions)
+        mu:     fitted mean probability, shape (junctions, samples) — will be transposed
+        rho:    dispersion parameter, shape (junctions,)
+        how:    'two-sided', 'left', or 'right'
+    Returns:
+        pvals, z: p-values and z-scores (samples, junctions)
+    """
+    if how not in ('two-sided', 'left', 'right'):
+        raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
+    
+    K = np.asarray(K, dtype=int)
+    N = np.asarray(N, dtype=float)
+
+    mu_arr  = np.asarray(mu,  dtype=float)
+    rho_arr = np.asarray(rho, dtype=float)  # (junctions,)
+
+    # mu is stored as (junctions, samples) ; transpose to (samples, junctions)
+    if mu_arr.ndim == 2:
+        mu_arr = mu_arr.T
+
+    # alpha/beta from mu/rho parameterization
+    conc  = (1.0 - rho_arr) / rho_arr          # (junctions,)
+    alpha = mu_arr * conc                        # (samples, junctions)
+    beta  = (1.0 - mu_arr) * conc               # (samples, junctions)
+
+    # z-score
+    var_bb = N * mu_arr * (1.0 - mu_arr) * (1.0 + (N - 1.0) * rho_arr)
+    z = (K - N * mu_arr) / np.sqrt(np.maximum(var_bb, 1e-10))
+
+    # betabinom requires integer n, k
+    N_int = np.round(N).astype(int)
+    K_int = np.round(K).astype(int)
+
+    # Compute CDF, PMF
+    pless = scipy.stats.betabinom.cdf(K_int, N_int, alpha, beta) 
+    dval  = scipy.stats.betabinom.pmf(K_int, N_int, alpha, beta)  
+
+    if how == 'left':
+        pvals = pless
+    elif how == 'right':
+        pvals = 1.0 - pless + dval                              
+    else:  # two-sided
+        pvals = 2.0 * np.minimum(np.minimum(pless, 1.0 - pless + dval), 0.5)
+
+    return pvals, z
 
 
 def _get_pv_t_base(x, mu, sigma, df, how='two-sided'):
