@@ -162,4 +162,5 @@ class TestPipelineFRASER:
 
 
 TestPipelineFRASER = TestPipelineFRASER()
-TestPipelineFRASER.test_run("/s/project/py_fraser/PROTRIDER/config.yaml")
+TestPipelineFRASER.test_run("PROTRIDER/config.yaml")
+
