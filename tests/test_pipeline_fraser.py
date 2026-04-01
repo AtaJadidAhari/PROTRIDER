@@ -161,6 +161,6 @@ class TestPipelineFRASER:
         pd.testing.assert_frame_equal(pvals_df, pvals_from_R, check_dtype=False)
 
 
-TestPipelineFRASER = TestPipelineFRASER()
-TestPipelineFRASER.test_run("PROTRIDER/config.yaml")
+#TestPipelineFRASER = TestPipelineFRASER()
+#TestPipelineFRASER.test_run("PROTRIDER/config.yaml")
 
