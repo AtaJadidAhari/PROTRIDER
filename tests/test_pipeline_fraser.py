@@ -11,8 +11,7 @@ from protrider.config import load_config
 from protrider.pipeline import _inference
 from protrider.datasets.datasets import OmicDataset
 from protrider.model.model_helper import  find_latent_dim, init_model
-from protrider.stats import fit_residuals, get_pvals
-from scipy.special import expit
+from protrider.stats import fit_residuals, get_pvals, get_pvals_by_gene, adjust_pvals
 
 
 class TestPipelineFRASER:
@@ -145,7 +144,6 @@ class TestPipelineFRASER:
         output_from_python = torch.sigmoid(torch.Tensor(df_out.values))
         output_from_python_df = pd.DataFrame(output_from_python.numpy().T, columns=df_out.index)
         pd.testing.assert_frame_equal(output_from_python_df, output_from_R.reset_index(drop=True), check_dtype=False)
-        print('Calculating p-values of the results from R')
         pvals, _ = get_pvals(x_true=fraser_dataset.K.values.T,
                          res=fraser_dataset.N.values.T,
                          mu=output_from_R,
@@ -159,6 +157,15 @@ class TestPipelineFRASER:
         pvals_df = pd.DataFrame(pvals).T
         pvals_df.columns = pvals_from_R.columns
         pd.testing.assert_frame_equal(pvals_df, pvals_from_R, check_dtype=False)
+        pvals_by_gene = get_pvals_by_gene(pvals_df, fraser_dataset.intron_ranges["hgnc_symbol"])
+        print("Head of p-values by gene:")
+        print(pvals_by_gene.head())
+        adjusted_pvals = adjust_pvals(pvals_df, method='holm', group_ids=fraser_dataset.intron_ranges["hgnc_symbol"])
+        adjusted_pvals = pd.DataFrame(adjusted_pvals, index=pvals_df.index, columns=pvals_df.columns)
+        #print(pvals_df.min().min())       # Are any p-values very small?
+        #print((pvals_df < 0.05).sum())    # How many are nominally significant?
+        pvals_adj_from_R = pd.read_csv("/s/project/py_fraser/exported_counts/pValsAdj.csv")
+        pd.testing.assert_frame_equal(adjusted_pvals, pvals_adj_from_R, check_dtype=False)
 
 
 #TestPipelineFRASER = TestPipelineFRASER()

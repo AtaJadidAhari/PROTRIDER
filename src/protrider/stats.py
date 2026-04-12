@@ -1,9 +1,11 @@
 import numpy as np
+import pandas as pd
 import scipy
 import tqdm
 import torch
 from joblib import Parallel, delayed
 import logging
+from statsmodels.stats.multitest import multipletests
 
 __all__ = ["fit_residuals", "get_pvals", "adjust_pvals"]
 
@@ -76,11 +78,60 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
         pvals, z = get_pv_bb(K=x_true, N=res, mu=mu, rho=sigma, how=how) 
     return pvals, z
 
-def adjust_pvals(pvals, method='bh'):
-    mask = ~np.isfinite(pvals)
-    pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=1, method=method)
-    pvals_adj[mask] = np.nan
+def get_pvals_by_gene(pvals, gene_names):
+    pvals = pvals.copy()
+    pvals["gene_names"] = gene_names
+    gene_min = pvals.groupby("gene_names").min()
+    return pvals["gene_names"].map(gene_min.to_dict(orient="index")).apply(pd.Series)
+                   # (n_samples,)
+
+
+def adjust_pvals(pvals, method='bh', group_ids=None): # TODO: Group per gene
+    if method == 'holm':
+        if group_ids is None:
+            raise ValueError("group_ids must be provided for Holm's correction")
+
+        # Step 1: Holm FWER
+        pvals_adj = pvals.copy().astype(float)
+        group_ids_arr = np.asarray(group_ids, dtype=object)
+        unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
+        for sample in pvals.columns:
+            col = pvals[sample].to_numpy(dtype=float)
+            for group in unique_groups:
+                group_mask = group_ids_arr == group
+                group_pvals = col[group_mask]
+                valid = ~np.isnan(group_pvals)
+                if valid.sum() > 0:
+                    adj = multipletests(group_pvals[valid], method='holm')[1]
+                    pvals_adj.loc[group_mask, sample] = np.min(adj)
+
+        # Step 2: Benjamini-Yekutieli 
+        mask = ~np.isfinite(pvals)
+        pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=0, method='by')
+        pvals_adj[mask] = np.nan
+        print("Adjusted p-values (BY) computed across unique sites.")
+    else:
+        mask = ~np.isfinite(pvals)
+        pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=1, method=method)
+        pvals_adj[mask] = np.nan
     return pvals_adj
+
+def get_delta_psi(K, N, mu, pseudocount=1):
+    """
+    Compute delta psi = observed psi - predicted psi.
+
+    Parameters
+    ----------
+    K   : DataFrame [junctions x samples], observed split reads
+    N   : DataFrame [junctions x samples], total reads
+    mu  : DataFrame [junctions x samples], model-predicted mean (predictedMeans)
+    
+    Returns
+    -------
+    delta_psi : DataFrame [junctions x samples]
+    """
+    obs_psi = (K + pseudocount) / (N + 2 * pseudocount)
+    return obs_psi - mu
 
 
 def _get_pv_norm(res, mu, sigma, how='two-sided'):
@@ -385,7 +436,7 @@ def _false_discovery_control(ps, *, axis=0, method='bh'):
     if not ps_in_range:
         raise ValueError("`ps` must include only numbers between 0 and 1.")
 
-    methods = {'bh', 'by'}
+    methods = {'bh', 'by'} #todo FWER
     if method.lower() not in methods:
         raise ValueError(f"Unrecognized `method` '{method}'."
                          f"Method must be one of {methods}.")
