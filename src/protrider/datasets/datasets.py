@@ -560,6 +560,30 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         return X_logit
         
 
+    def get_site_index(self, psi_type: str = "jaccard") -> np.ndarray:
+        """
+        Returns a 1D array of splice site IDs (one per junction), matching R's getSiteIndex.
+        Junctions sharing the same site ID are grouped for Holm FWER correction.
+
+        psi_type:
+            "jaccard" — each junction is its own group (no grouping, Holm is a no-op)
+            "psi5"    — group by donor site: startID on + strand, endID on - strand
+            "psi3"    — group by acceptor site: endID on + strand, startID on - strand
+        """
+        if psi_type == "jaccard":
+            return np.arange(len(self.intron_ranges))
+
+        start_id = self.intron_ranges["StartId"].to_numpy()
+        end_id   = self.intron_ranges["EndId"].to_numpy()
+        strand   = self.intron_ranges["Strand"].fillna("+").replace({"*": "+"}).to_numpy()
+
+        if psi_type == "psi5":
+            return np.where(strand == "+", start_id, end_id)
+        elif psi_type == "psi3":
+            return np.where(strand == "+", end_id, start_id)
+        else:
+            raise ValueError(f"Unknown psi_type '{psi_type}'. Choose from 'jaccard', 'psi5', 'psi3'.")
+
     def annotate_junctions(self, gtf_file: str, feature_name: str = "hgnc_symbol"):
         """Annotate junctions with gene symbols and reference overlap status.
 
@@ -569,8 +593,7 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
           - 'annotatedJunction': 'both' (exact intron match), 'start' (only 5' end
             matches), 'end' (only 3' end matches), or 'none'.
 
-        Parameters
-        ----------
+        Parameters:
         gtf_file : str
             Path to a GTF annotation file.
         feature_name : str
@@ -659,3 +682,6 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         annotations[idx] = ov_df["annotatedJunction"].values
 
         self.intron_ranges["annotatedJunction"] = annotations
+    
+
+
