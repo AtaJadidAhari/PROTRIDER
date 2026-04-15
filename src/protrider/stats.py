@@ -86,7 +86,7 @@ def get_pvals_by_gene(pvals, gene_names):
                    # (n_samples,)
 
 
-def adjust_pvals(pvals, method='bh', group_ids=None): # TODO: Group per gene
+def adjust_pvals(pvals, method='bh', group_ids=None): 
     if method == 'holm':
         if group_ids is None:
             raise ValueError("group_ids must be provided for Holm's correction")
@@ -116,7 +116,7 @@ def adjust_pvals(pvals, method='bh', group_ids=None): # TODO: Group per gene
         pvals_adj[mask] = np.nan
     return pvals_adj
 
-def get_delta_psi(K, N, mu, pseudocount=1):
+def get_delta_psi(K, N, mu, pseudocount=0.1):
     """
     Compute delta psi = observed psi - predicted psi.
 
