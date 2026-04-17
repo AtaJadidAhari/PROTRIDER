@@ -12,4 +12,4 @@ def test_junction_annotations(fraser_dataset, GTF_PATH="/s/project/py_fraser/PRO
     result_first = fraser_dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]].copy()
     fraser_dataset.annotate_junctions(GTF_PATH)
     result_second = fraser_dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]].copy()
-    pd.testing.assert_frame_equal(result_first, result_second), "Annotations should be consistent across multiple calls to annotate_junctions"
+    pd.testing.assert_frame_equal(result_first, result_second)

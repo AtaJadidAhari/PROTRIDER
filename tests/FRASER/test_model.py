@@ -5,7 +5,7 @@ from protrider.stats import fit_residuals
 import pandas as pd
 import numpy as np
 
-def test_best_q(fraser_dataset, config_path):
+def test_best_latent_dim(fraser_dataset, config_path): #makeSimulatedFraserDataSet -> to test function correctness
     config = load_config(config_path)
     q = find_latent_dim(fraser_dataset, method=config.find_q_method,
                         # Params for grid search method
@@ -32,10 +32,9 @@ def test_best_q(fraser_dataset, config_path):
     assert q > 1, "q should be greater than 1"
     assert q <= len(fraser_dataset.samples_cols), "q should be less than or equal to the number of samples"
     assert q <= fraser_dataset.X.shape[1], "q should be less than or equal to the number of junctions"
-    return q
 
 def test_model_architecture(fraser_dataset, config_path, q):
-    pass
+    pass #TODO
 
 def test_model_output(fraser_dataset, config_path, q):
     config = load_config(config_path)
@@ -68,8 +67,6 @@ def test_model_output(fraser_dataset, config_path, q):
     assert np.isfinite(init_loss), "Initial loss should be finite"
     assert np.isfinite(init_mse_loss), "Initial MSE loss should be finite"
     assert init_loss > 0 , "Initial loss should be greater than 0"
-
-    return df_out, model
 
 def test_fit_residuals(fraser_dataset, config_path, df_out, model):
     config = load_config(config_path)

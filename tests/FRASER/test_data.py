@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
 
-def test_reads(fraser_dataset):
+def test_split_and_unsplit_read_counts(fraser_dataset):
     assert isinstance(fraser_dataset.split_reads, pd.DataFrame), "split_reads should be a DataFrame"
     assert isinstance(fraser_dataset.unsplit_reads, pd.DataFrame), "unsplit_reads should be a DataFrame"
 
-def test_K_N(fraser_dataset):
+def test_nominator_and_denominator_of_jaccard_index(fraser_dataset):
     n_junctions = len(fraser_dataset.split_reads)
     n_samples   = len(fraser_dataset.samples_cols)
 
@@ -59,4 +59,5 @@ def test_centered_log_data_noNA(fraser_dataset):
     assert isinstance(fraser_dataset.centered_log_data_noNA, np.ndarray), "centered_log_data_noNA should be a numpy array"
     
     # shape
+    # TODO check : (n_samples, n_filtered)
     assert fraser_dataset.centered_log_data_noNA.shape == (n_samples, n_junctions), "centered_log_data_noNA should have shape (n_samples, n_junctions)"

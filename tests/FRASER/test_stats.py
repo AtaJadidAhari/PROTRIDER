@@ -20,8 +20,6 @@ def test_pvals(fraser_dataset, config_path, rho, mu):
     assert (finite >= 0).all() and (finite <= 1).all(), "p-values must be in [0, 1]"
     assert np.isfinite(pvals_df.values).any(), "p-values should not be all NaN or infinite"
     assert pvals.shape == z.shape, f"pvals shape {pvals.shape} != z shape {z.shape}"
-    
-    return pvals_df
 
 def test_pvals_by_gene(fraser_dataset, pvals):
     pvals_by_gene = get_pvals_by_gene(pvals, fraser_dataset.intron_ranges["hgnc_symbol"])

@@ -46,10 +46,16 @@ def gene_annotation_path():
     return 'sample_data/gencode_annotation_trunc.gtf'
 
 
+# check path to config.yaml
 @pytest.fixture
 def config_path():
-    path = '/s/project/py_fraser/PROTRIDER/config.yaml'
-    if not Path(path).exists():
-        pytest.skip(f'Local config not found: {path}')
-    return path
+    return 'config.yaml'
+
+@pytest.fixture
+def split_reads_path():
+    return "sample_data/fraser/split_reads.tsv"
+
+@pytest.fixture
+def unsplit_reads_path():
+    return "sample_data/fraser/unsplit_reads.tsv"
 
