@@ -86,7 +86,7 @@ def get_pvals_by_gene(pvals, gene_names):
                    # (n_samples,)
 
 
-def adjust_pvals(pvals, method='bh', group_ids=None): 
+def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs = -1): 
     if method == 'holm':
         if group_ids is None:
             raise ValueError("group_ids must be provided for Holm's correction")
@@ -95,15 +95,25 @@ def adjust_pvals(pvals, method='bh', group_ids=None):
         pvals_adj = pvals.copy().astype(float)
         group_ids_arr = np.asarray(group_ids, dtype=object)
         unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
-        for sample in pvals.columns:
+
+        # function for parallelization
+        def process_sample(sample):
             col = pvals[sample].to_numpy(dtype=float)
+            result = col.copy()
             for group in unique_groups:
                 group_mask = group_ids_arr == group
                 group_pvals = col[group_mask]
                 valid = ~np.isnan(group_pvals)
                 if valid.sum() > 0:
                     adj = multipletests(group_pvals[valid], method='holm')[1]
-                    pvals_adj.loc[group_mask, sample] = np.min(adj)
+                    result[group_mask] = np.min(adj)
+            return sample, result
+        
+        results = Parallel(n_jobs=n_jobs)(delayed(process_sample)(sample) for sample in pvals.columns)
+
+        pvals_adj = pvals.copy().astype(float)
+        for sample, result in results:
+            pvals_adj[sample] = result
 
         # Step 2: Benjamini-Yekutieli 
         mask = ~np.isfinite(pvals)
