@@ -2,6 +2,8 @@ import pytest
 import logging
 from pathlib import Path
 
+ROOT = Path(__file__).parent.parent  # PROTRIDER/
+
 
 @pytest.fixture(autouse=True)
 def setup_logger():
@@ -13,12 +15,12 @@ def setup_logger():
 
 @pytest.fixture
 def covariates_path():
-    return Path('sample_data/sample_annotations.tsv')
+    return ROOT / 'sample_data/sample_annotations.tsv'
 
 
 @pytest.fixture
 def protein_intensities_path():
-    return 'sample_data/protrider_sample_dataset.tsv'
+    return str(ROOT / 'sample_data/protrider_sample_dataset.tsv')
 
 
 @pytest.fixture
@@ -38,24 +40,23 @@ def continuous_covariates():
 
 @pytest.fixture
 def gene_expression_path():
-    return 'sample_data/drop_demo_counts_all.tsv'
+    return str(ROOT / 'sample_data/drop_demo_counts_all.tsv')
 
 
 @pytest.fixture
 def gene_annotation_path():
-    return 'sample_data/gencode_annotation_trunc.gtf'
+    return str(ROOT / 'sample_data/gencode_annotation_trunc.gtf')
 
 
-# check path to config.yaml
 @pytest.fixture
 def config_path():
-    return 'config.yaml'
+    return str(ROOT / 'config.yaml')
 
 @pytest.fixture
 def split_reads_path():
-    return "sample_data/fraser/split_reads.tsv"
+    return str(ROOT / 'sample_data/fraser/split_reads.tsv')
 
 @pytest.fixture
 def unsplit_reads_path():
-    return "sample_data/fraser/unsplit_reads.tsv"
+    return str(ROOT / 'sample_data/fraser/unsplit_reads.tsv')
 
