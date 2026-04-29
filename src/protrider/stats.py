@@ -80,51 +80,51 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
 
 def get_pvals_by_gene(pvals, gene_names):
     pvals = pvals.copy()
-    pvals["gene_names"] = gene_names
-    gene_min = pvals.groupby("gene_names").min()
-    return pvals["gene_names"].map(gene_min.to_dict(orient="index")).apply(pd.Series)
-                   # (n_samples,)
+    genes_exploded = gene_names.explode() # duplicate for junctions with multiple genes
+    pvals_exploded = pvals.loc[genes_exploded.index].copy()
+    pvals_exploded["gene_name"] = genes_exploded.values
+    gene_min = pvals_exploded.groupby("gene_name").min()
+    return pvals_exploded["gene_name"].map(gene_min.to_dict(orient="index")).apply(pd.Series)
 
 
-def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs = -1): 
+def adjust_pvals(pvals, method='bh', group_ids=None, aggregate = False, n_jobs = -1): #TODO: add subset FDR  correction
     if method == 'holm':
-        if group_ids is None:
-            raise ValueError("group_ids must be provided for Holm's correction")
-
-        # Step 1: Holm FWER
         pvals_adj = pvals.copy().astype(float)
-        group_ids_arr = np.asarray(group_ids, dtype=object)
-        unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
+        if not aggregate:
+            if group_ids is None:
+                raise ValueError("group_ids must be provided for Holm's correction on junction level.")
+            # Step 1: Holm FWER
+            group_ids_arr = np.asarray(group_ids, dtype=object)
+            unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
 
-        # function for parallelization
-        def process_sample(sample):
-            col = pvals[sample].to_numpy(dtype=float)
-            result = col.copy()
-            for group in unique_groups:
-                group_mask = group_ids_arr == group
-                group_pvals = col[group_mask]
-                valid = ~np.isnan(group_pvals)
-                if valid.sum() > 0:
-                    adj = multipletests(group_pvals[valid], method='holm')[1]
-                    result[group_mask] = np.min(adj)
-            return sample, result
-        
-        results = Parallel(n_jobs=n_jobs)(delayed(process_sample)(sample) for sample in pvals.columns)
+            # function for parallelization
+            def process_sample(sample):
+                col = pvals[sample].to_numpy(dtype=float)
+                result = col.copy()
+                for group in unique_groups:
+                    group_mask = group_ids_arr == group
+                    group_pvals = col[group_mask]
+                    valid = ~np.isnan(group_pvals)
+                    if valid.sum() > 0:
+                        adj = multipletests(group_pvals[valid], method='holm')[1]
+                        result[group_mask] = np.min(adj)
+                return sample, result
+            
+            results = Parallel(n_jobs=n_jobs)(delayed(process_sample)(sample) for sample in pvals.columns)
 
-        pvals_adj = pvals.copy().astype(float)
-        for sample, result in results:
-            pvals_adj[sample] = result
+            for sample, result in results:
+                pvals_adj[sample] = result
 
         # Step 2: Benjamini-Yekutieli 
         mask = ~np.isfinite(pvals)
-        pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=0, method='by')
+        pvals_adj = _false_discovery_control(np.where(mask, 1, pvals_adj), axis=0, method='by')
         pvals_adj[mask] = np.nan
         print("Adjusted p-values (BY) computed across unique sites.")
     else:
         mask = ~np.isfinite(pvals)
         pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=1, method=method)
         pvals_adj[mask] = np.nan
-    return pvals_adj
+    return pd.DataFrame(pvals_adj, index=pvals.index, columns=pvals.columns)
 
 def get_delta_psi(K, N, mu, pseudocount=0.1):
     """
@@ -138,10 +138,10 @@ def get_delta_psi(K, N, mu, pseudocount=0.1):
     
     Returns
     -------
-    delta_psi : DataFrame [junctions x samples]
+    delta_psi : DataFrame [samples x junctions]
     """
     obs_psi = (K + pseudocount) / (N + 2 * pseudocount)
-    return obs_psi - mu
+    return pd.DataFrame(obs_psi - mu, index=K.index, columns=K.columns).T
 
 
 def _get_pv_norm(res, mu, sigma, how='two-sided'):

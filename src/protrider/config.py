@@ -32,6 +32,11 @@ class ProtriderConfig:
     # FRASER
     split_reads: Optional[str] = None
     unsplit_reads: Optional[str] = None
+    delta_psi_threshold: float = 0.3
+    min_count: int = 5
+    min_expression_in_one_sample: int = 20
+    quantile_min_expression: int = 10
+    quantile_for_filtering: float = 0.95
 
     # OUTRIDER params
     fpkmCutoff: Optional[int] =  1

@@ -6,8 +6,8 @@ import torch
 from dataclasses import dataclass
 
 from .model import train, train_val, MSEBCELoss, OmicAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
-from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset
-from .stats import get_pvals, fit_residuals, adjust_pvals
+from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset, OmicDataset, FraserDataset
+from .stats import get_pvals, fit_residuals, adjust_pvals, get_pvals_by_gene, get_delta_psi 
 from .plots import plot_cv_loss
 from .config import ProtriderConfig
 
@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Result:
     """Stores results from a standard run of PROTRIDER."""
-    dataset: ProtriderDataset
+    #dataset: ProtriderDataset
+    dataset: OmicDataset
     df_out: pd.DataFrame
     df_res: pd.DataFrame
     df_pvals: pd.DataFrame
@@ -33,10 +34,25 @@ class Result:
     n_out_max: int
     n_out_total: int
     pval_dist: str = 'gaussian'  # Distribution used for p-value computation
-    outlier_threshold: float = 0.1  # Threshold for determining outliers
-    
+    outlier_threshold: float = 0.1  # Threshold for determining outliers (adjusted p value cutoff)
+    delta_psi_cutoff: float = 0.1  # Threshold for delta PSI for fraser
+    min_count: int = 5  # Minimum total count threshold for fraser
+
+    def detect_outliers(self, df_res, analysis: str = "protrider") -> pd.DataFrame:
+        if analysis == "fraser":
+            df_res['JUNCTION_outlier'] = (df_res['JUNCTION_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() >= self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
+        else:
+            df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
+        return df_res
+
+    def add_features(self, df_res):
+        df_res['numSamplesPerGene'] = (df_res.groupby('hgnc_symbol')['sampleID'].transform('nunique'))
+        df_res['numEventsPerGene'] = (df_res.groupby(['hgnc_symbol', 'sampleID'])['sampleID'].transform('count'))
+        df_res['numSamplesPerJunc'] = (df_res.groupby(['seqnames', 'start', 'end', 'strand'])['sampleID'].transform('nunique'))
+        return df_res
+
     def save(self, out_dir: str, format: Literal["wide", "long"] = "wide", 
-            include_all: bool = False, analysis: str = "protrider") -> Optional[pd.DataFrame]:
+            include_all: bool = False, analysis: str = "protrider", aggregate: bool = False) -> Optional[pd.DataFrame]:
         """
         Save result dataframes to CSV files.
         
@@ -51,6 +67,7 @@ class Result:
             DataFrame if format="long", None if format="wide"
             
         """
+        out_dir = f"{out_dir}/{analysis}"
         if format == "wide":
             logger.info('=== Saving results in wide format ===')
             
@@ -105,7 +122,7 @@ class Result:
             logger.info(f"Saved fc scores to {out_p}")
             
             # AE raw, filtered input
-            if "analysis" == 'outrider':
+            if analysis == 'outrider':
                 out_p = f'{out_dir}/raw_filtered_input.csv'
                 self.dataset.raw_filtered.T.to_csv(out_p, header=True, index=True)
                 logger.info(f"Saved raw_filtered_input to {out_p}")
@@ -117,40 +134,71 @@ class Result:
             
             # Stack all dataframes at once for efficient melting
             import pandas as pd
-            
+
             # Create a multi-index dataframe with all values
-            dfs_to_melt = {
-                'PROTEIN_LOG2INT': self.dataset.data,
-                'PROTEIN_EXPECTED_LOG2INT': self.df_out,
-                'PROTEIN_INT': self.dataset.raw_data,
-                'PROTEIN_ZSCORE': self.df_Z,
-                'PROTEIN_PVALUE': self.df_pvals,
-                'PROTEIN_PADJ': self.df_pvals_adj,
-                'PROTEIN_LOG2FC': self.log2fc,
-                'PROTEIN_FC': self.fc,
-            }
+            if analysis == 'fraser': 
+                if aggregate:
+                    # Calculate gene-level p-values and adjusted p-values for fraser results
+                    self.df_pvals = get_pvals_by_gene(self.df_pvals.T, self.dataset.intron_ranges["hgnc_symbol"]).T.dropna(how = 'all') # drop the one extra row that is generated
+                    self.df_pvals_adj = adjust_pvals(self.df_pvals, method='holm', aggregate=True)
+                
+                dfs_to_melt = {
+                    'JUNCTION_PREDICTED': self.df_out, # psi : samples * junctions
+                    'JUNCTION_DELTAPSI': self.df_res, # delta psi : samples * junctions
+                    'JUNCTION_PVALUE': self.df_pvals, #  samples * junctions
+                    'JUNCTION_PADJ': self.df_pvals_adj, #  samples * junctions
+                    **self.dataset.calculate_counts()
+                }   
+
+            else:
+                dfs_to_melt = {
+                    'PROTEIN_LOG2INT': self.dataset.data,
+                    'PROTEIN_EXPECTED_LOG2INT': self.df_out,
+                    'PROTEIN_INT': self.dataset.raw_data,
+                    'PROTEIN_ZSCORE': self.df_Z,
+                    'PROTEIN_PVALUE': self.df_pvals,
+                    'PROTEIN_PADJ': self.df_pvals_adj,
+                    'PROTEIN_LOG2FC': self.log2fc,
+                    'PROTEIN_FC': self.fc,
+                }
             
-            if self.df_presence is not None:
-                dfs_to_melt['pred_presence_probability'] = self.df_presence
-            
+                if self.df_presence is not None:
+                    dfs_to_melt['pred_presence_probability'] = self.df_presence
+
             # Concatenate all dataframes along columns with a multi-index
             combined = pd.concat(dfs_to_melt, axis=1)
-            
+        
             # Melt once instead of multiple times (use future_stack=True for pandas 2.1+)
             df_res = combined.stack(future_stack=True).reset_index()
-            df_res.columns = ['sampleID', 'proteinID'] + list(dfs_to_melt.keys())
+            
+            prefix = 'junction' if analysis == 'fraser' else 'protein'
+            df_res.columns = ['sampleID', f'{prefix}ID'] + list(dfs_to_melt.keys())
 
-            df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(
-                lambda x: x <= self.outlier_threshold)
+            if analysis == 'fraser':
+                junc_meta = pd.concat([
+                    self.dataset.split_reads[["seqnames", "start", "end", "width", "strand"]],
+                    self.dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]],
+                    ], axis=1)
+                df_res = df_res.merge(junc_meta, left_on='junctionID', right_index=True, how='left')
+
+            #df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(
+            #    lambda x: x <= self.outlier_threshold)
+
             df_res['pvalDistribution'] = self.pval_dist
 
             if not include_all:
                 original_len = df_res.shape[0]
-                df_res = df_res.query('PROTEIN_outlier==True')
+                #df_res = df_res.query(f'{prefix.upper()}_outlier==True')
+                df_res = self.detect_outliers(df_res, analysis) 
+                # TODO for fraser also calculate the extra columns
+                if not aggregate:
+                    df_res = self.add_features(df_res)
                 logger.info(
-                    f'\t--- Removing non-significant sample-protein combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
+                        f'\t--- Removing non-significant sample-{prefix} combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
 
-            out_p = f"{out_dir}/protrider_summary.csv"
+            
+            out_p = f"{out_dir}/{analysis}_summary.csv" 
+            print(df_res.head())
             df_res.to_csv(out_p, index=None)
             logger.info(f'Saved output summary with shape {df_res.shape} to {out_p}')
             
@@ -812,41 +860,62 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
 
-def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn, pval_dist):
+def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, 
+                    pseudocount, outlier_threshold, base_fn, pval_dist, delta_psi_cutoff, min_count):
     # Store as df
-    df_pvals_adj = pd.DataFrame(pvals_adj)
-    df_pvals_adj.columns = dataset.data.columns
-    df_pvals_adj.index = dataset.data.index
+    if not isinstance(pvals_adj, pd.DataFrame):
+        df_pvals_adj = pd.DataFrame(pvals_adj)
+        df_pvals_adj.columns = dataset.data.columns
+        df_pvals_adj.index = dataset.data.index
+    else: 
+        df_pvals_adj = pvals_adj
 
     # Store as df
-    df_pvals = pd.DataFrame(pvals)
-    df_pvals.columns = dataset.data.columns
-    df_pvals.index = dataset.data.index
+    if not isinstance(pvals, pd.DataFrame):
+        df_pvals = pd.DataFrame(pvals)
+        df_pvals.columns = dataset.data.columns
+        df_pvals.index = dataset.data.index
+    else:
+        df_pvals = pvals
 
-    df_Z = pd.DataFrame(Z)
-    df_Z.columns = dataset.data.columns
-    df_Z.index = dataset.data.index
+    # Store as df
+    if not isinstance(Z, pd.DataFrame) and Z is not None:
+        df_Z = pd.DataFrame(Z)
+        df_Z.columns = dataset.data.columns
+        df_Z.index = dataset.data.index
+    else:
+        df_Z = Z
 
-    df_pvals_one_sided = pd.DataFrame(pvals_one_sided)
-    df_pvals_one_sided.columns = dataset.data.columns
-    df_pvals_one_sided.index = dataset.data.index
+    if not isinstance(pvals_one_sided, pd.DataFrame) and pvals_one_sided is not None:
+        df_pvals_one_sided = pd.DataFrame(pvals_one_sided)
+        df_pvals_one_sided.columns = dataset.data.columns
+        df_pvals_one_sided.index = dataset.data.index
+    else:
+        df_pvals_one_sided = pvals_one_sided
 
     pseudocount = pseudocount  # 0.01
-    log2fc = np.log2(base_fn(dataset.data) + pseudocount) - \
-        np.log2(base_fn(df_out) + pseudocount)
-    fc = (base_fn(dataset.data) + pseudocount) / \
-        (base_fn(df_out) + pseudocount)
+    if base_fn is not None:
+        log2fc = np.log2(base_fn(dataset.data) + pseudocount) - \
+            np.log2(base_fn(df_out) + pseudocount)
+        fc = (base_fn(dataset.data) + pseudocount) / \
+            (base_fn(df_out) + pseudocount)
+    else:
+        log2fc, fc = None, None
+        
+    
+    n_out_median, n_out_max, n_out_total = None, None, None
+    if type(dataset) != FraserDataset:
+        outs_per_sample = np.sum(df_pvals_adj.values <= outlier_threshold, axis=1)
+        n_out_median = np.nanmedian(outs_per_sample)
+        n_out_max = np.nanmax(outs_per_sample)
+        n_out_total = np.nansum(outs_per_sample)
+        logger.info(
+            f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}')
 
-    outs_per_sample = np.sum(df_pvals_adj.values <= outlier_threshold, axis=1)
-    n_out_median = np.nanmedian(outs_per_sample)
-    n_out_max = np.nanmax(outs_per_sample)
-    n_out_total = np.nansum(outs_per_sample)
-    logger.info(
-        f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}')
-
-    logger.info(
-        f'Finished computing pvalues. No. outliers per sample in median: {np.nanmedian(outs_per_sample)}')
+        logger.info(
+            f'Finished computing pvalues. No. outliers per sample in median: {np.nanmedian(outs_per_sample)}')
+    
 
     return Result(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence, df_pvals=df_pvals, df_Z=df_Z,
                   df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc, n_out_median=n_out_median, n_out_max=n_out_max,
-                  n_out_total=n_out_total, pval_dist=pval_dist, outlier_threshold=outlier_threshold)
+                  n_out_total=n_out_total, pval_dist=pval_dist, outlier_threshold=outlier_threshold, delta_psi_cutoff = delta_psi_cutoff, min_count = min_count)
