@@ -71,9 +71,15 @@ pval_sided: 'two-sided'
 pseudocount: 0.01 # for FC computation
 
 ## Reporting params
-outlier_threshold: 0.1
+outlier_threshold: 0.1 # for adjusted p values 
+delta_psi_threshold : 0.3 # for fraser
+min_count : 5 # for fraser
 report_all: True
 
 verbose: False
 device: 'cpu'
+
+min_expression_in_one_sample: 20
+quantile_min_expression : 10
+quantile_for_filtering: 0.95
 

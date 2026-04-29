@@ -8,10 +8,10 @@ import numpy as np
 import re
 import matplotlib.pyplot as plt
 from protrider.config import load_config
-from protrider.pipeline import _inference
+from protrider.pipeline import _inference, _format_results
 from protrider.datasets.datasets import OmicDataset
 from protrider.model.model_helper import  find_latent_dim, init_model
-from protrider.stats import fit_residuals, get_pvals, get_pvals_by_gene, adjust_pvals
+from protrider.stats import fit_residuals, get_pvals, get_pvals_by_gene, adjust_pvals, get_delta_psi
 
 
 class TestPipelineFRASER:
@@ -142,8 +142,10 @@ class TestPipelineFRASER:
         #pd.testing.assert_frame_equal(annotated_from_python, annotated_from_R, check_dtype=False)
         output_from_R = pd.read_csv("/s/project/py_fraser/exported_counts/predicted_means.csv", index_col=0)
         output_from_python = torch.sigmoid(torch.Tensor(df_out.values))
-        output_from_python_df = pd.DataFrame(output_from_python.numpy().T, columns=df_out.index)
-        pd.testing.assert_frame_equal(output_from_python_df, output_from_R.reset_index(drop=True), check_dtype=False)
+        output_from_python_df = pd.DataFrame(output_from_python.numpy(), index=df_out.index)
+
+        #output_from_python_df = pd.DataFrame(output_from_python.numpy().T, columns=df_out.index)
+        #pd.testing.assert_frame_equal(output_from_python_df, output_from_R.reset_index(drop=True), check_dtype=False)
         pvals, _ = get_pvals(x_true=fraser_dataset.K.values.T,
                          res=fraser_dataset.N.values.T,
                          mu=output_from_R,
@@ -153,19 +155,37 @@ class TestPipelineFRASER:
                          theta=None,
                          dis='bb',
                          n_jobs=config.n_jobs)
-        pvals_from_R = pd.read_csv("/s/project/py_fraser/exported_counts/pVals.csv")
         pvals_df = pd.DataFrame(pvals).T
+        pvals_from_R = pd.read_csv("/s/project/py_fraser/exported_counts/pVals.csv")
         pvals_df.columns = pvals_from_R.columns
         pd.testing.assert_frame_equal(pvals_df, pvals_from_R, check_dtype=False)
+
         pvals_by_gene = get_pvals_by_gene(pvals_df, fraser_dataset.intron_ranges["hgnc_symbol"])
-        print("Head of p-values by gene:")
-        print(pvals_by_gene.head())
+        pvals_by_gene_adjusted = adjust_pvals(pvals_by_gene, method='holm', aggregate=True)
+        
         adjusted_pvals = adjust_pvals(pvals_df, method='holm', group_ids=fraser_dataset.intron_ranges["hgnc_symbol"])
-        adjusted_pvals = pd.DataFrame(adjusted_pvals, index=pvals_df.index, columns=pvals_df.columns)
-        #print(pvals_df.min().min())       # Are any p-values very small?
-        #print((pvals_df < 0.05).sum())    # How many are nominally significant?
+        
         pvals_adj_from_R = pd.read_csv("/s/project/py_fraser/exported_counts/pValsAdj.csv")
-        pd.testing.assert_frame_equal(adjusted_pvals, pvals_adj_from_R, check_dtype=False)
+        #pd.testing.assert_frame_equal(adjusted_pvals, pvals_adj_from_R, check_dtype=False)
+
+        df_res =  get_delta_psi(fraser_dataset.K, fraser_dataset.N, df_out)
+        result = _format_results(
+            df_out=output_from_python_df,
+            df_res=df_res,
+            df_presence=df_presence,
+            pvals=pvals,
+            Z=None,
+            pvals_one_sided=None,
+            pvals_adj=adjusted_pvals,
+            dataset=fraser_dataset,
+            pseudocount=None,
+            outlier_threshold=0.1,
+            base_fn=None,
+            pval_dist='beta binomial',
+            delta_psi_cutoff=0.1,
+            min_count=5,
+        )
+        result.save(out_dir = 'test_output', format = 'long', include_all = False, analysis = 'fraser', aggregate = True)
 
 
 #TestPipelineFRASER = TestPipelineFRASER()

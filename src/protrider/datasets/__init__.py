@@ -1,2 +1,2 @@
-from .datasets import PCADataset, ProtriderDataset, ProtriderSubset, OutriderDataset
+from .datasets import PCADataset, ProtriderDataset, ProtriderSubset, OutriderDataset, OmicDataset, FraserDataset
 from .cv import ProtriderCVGenerator, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator

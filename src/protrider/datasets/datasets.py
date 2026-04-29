@@ -517,24 +517,22 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
     def calculate_K(self):
         return self.split_reads[self.samples_cols]
     
-    def calculate_N(self): 
-        result = np.vstack([
-            (
-            # 1) sum of split reads with current startID
-            self.split_reads.loc[self.split_reads["startID"] == row.startID,self.samples_cols].sum()
-            # 2) sum of split reads with current endID
-            + 
-            self.split_reads.loc[self.split_reads["endID"] == row.endID,self.samples_cols].sum()
-            # 3) sum of unsplit reads with spliceSiteID = current startID
-            + 
-            self.unsplit_reads.loc[self.unsplit_reads["spliceSiteID"] == row.startID,self.samples_cols].sum()
-            # 4) sum of unsplit reads with spliceSiteID = current endID
-            + 
-            self.unsplit_reads.loc[self.unsplit_reads["spliceSiteID"] == row.endID,self.samples_cols].sum()
-            ).to_numpy()
-            for row in self.split_reads.itertuples(index=False)
-        ])
-        result_df = pd.DataFrame(result,columns=self.samples_cols)
+    def calculate_N(self):
+        junc_idx = self.split_reads.index
+
+        # Vectorized lookup: group unsplit reads by spliceSiteID, sum counts per site
+        nsr = self.unsplit_reads.groupby("spliceSiteID")[self.samples_cols].sum()
+        nsr_donor   = nsr.reindex(self.split_reads["startID"].values).fillna(0).astype(int).set_axis(junc_idx)
+        nsr_acceptor = nsr.reindex(self.split_reads["endID"].values).fillna(0).astype(int).set_axis(junc_idx)
+        self.nonsplitCounts = nsr_donor + nsr_acceptor  # junctions × samples
+
+        # Vectorized lookup: group split reads by startID and endID, sum counts per site
+        split_by_start = self.split_reads.groupby("startID")[self.samples_cols].sum()
+        split_by_end   = self.split_reads.groupby("endID")[self.samples_cols].sum()
+        alt_donor   = split_by_start.reindex(self.split_reads["startID"].values).fillna(0).astype(int).set_axis(junc_idx)
+        alt_acceptor = split_by_end.reindex(self.split_reads["endID"].values).fillna(0).astype(int).set_axis(junc_idx)
+
+        result_df = alt_donor + alt_acceptor + self.nonsplitCounts
         return result_df - self.K
 
     def filter_expression_jaccard(self, minExpressionInOneSample=20, quantile=0.95, quantileMinExpression=10):
@@ -683,5 +681,25 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
 
         self.intron_ranges["annotatedJunction"] = annotations
     
+    def calculate_counts(self) -> dict[str, pd.DataFrame]:
+        # returns samples* junctions
+        nonsplitProportion = self.nonsplitCounts / self.N
+
+        def broadcast(series: pd.Series) -> pd.DataFrame:
+            """Repeat a per-junction scalar across all sample columns."""
+            return pd.DataFrame({col: series for col in self.samples_cols}, index=self.N.index)
+
+        return {
+            'counts':                        self.K.T,
+            'totalCounts':                   self.N.T,
+            'nonsplitCounts':                self.nonsplitCounts.T,
+            'nonsplitProportion':            nonsplitProportion.T,
+            'meanCounts':                    broadcast(self.K.mean(axis=1)).T,
+            'meanTotalCounts':               broadcast(self.N.mean(axis=1)).T,
+            'nonsplitProportion_99quantile': broadcast(
+                pd.Series(np.quantile(nonsplitProportion.values, 0.99, axis=1),
+                          index=self.N.index)
+            ).T,
+        }
 
 
