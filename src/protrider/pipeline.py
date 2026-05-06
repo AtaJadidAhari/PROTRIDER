@@ -35,7 +35,7 @@ class Result:
     # n_out_total: int
     pval_dist: str = 'gaussian'  # Distribution used for p-value computation
     outlier_threshold: float = 0.1  # Threshold for determining outliers (adjusted p value cutoff)
-    delta_psi_cutoff: float = 0.1  # Threshold for delta PSI for fraser
+    delta_psi_cutoff: float = 0.1  # Threshold for delta PSI (jaccard) for fraser
     min_count: int = 5  # Minimum total count threshold for fraser
 
     def detect_outliers(self, df_res, analysis: str = "protrider") -> pd.DataFrame:

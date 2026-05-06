@@ -1,5 +1,5 @@
 from protrider.config import load_config
-from protrider.stats import get_pvals, get_pvals_by_gene, adjust_pvals, get_delta_psi
+from protrider.stats import get_pvals, get_pvals_by_gene, adjust_pvals
 import pandas as pd
 import numpy as np
 
@@ -38,7 +38,7 @@ def test_adjust_pvals(fraser_dataset, pvals):
     finite = adjusted_pvals.values[np.isfinite(adjusted_pvals.values)]
     assert (finite >= 0).all() and (finite <= 1).all(), "adjusted p-values must be in [0, 1]"
 
-def test_delta_psi(fraser_dataset, mu):
-    delta = get_delta_psi(fraser_dataset.K, fraser_dataset.N, mu)
+def test_delta_psi(fraser_dataset):
+    delta = fraser_dataset.get_delta_psi()
     finite = np.asarray(delta, dtype=float)[np.isfinite(np.asarray(delta, dtype=float))]
     assert (finite > -1).all() and (finite < 1).all(), "delta_psi values must be in (-1, 1)"
