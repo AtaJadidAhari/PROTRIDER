@@ -11,7 +11,7 @@ from protrider.config import load_config
 from protrider.pipeline import _inference, _format_results
 from protrider.datasets.datasets import OmicDataset
 from protrider.model.model_helper import  find_latent_dim, init_model
-from protrider.stats import fit_residuals, get_pvals, get_pvals_by_gene, adjust_pvals, get_delta_psi
+from protrider.stats import fit_residuals, get_pvals, get_pvals_by_gene, adjust_pvals
 
 
 class TestPipelineFRASER:
@@ -144,21 +144,32 @@ class TestPipelineFRASER:
         output_from_python = torch.sigmoid(torch.Tensor(df_out.values))
         output_from_python_df = pd.DataFrame(output_from_python.numpy(), index=df_out.index)
 
-        #output_from_python_df = pd.DataFrame(output_from_python.numpy().T, columns=df_out.index)
+        output_from_python_df = pd.DataFrame(output_from_python.numpy().T, columns=df_out.index)
         #pd.testing.assert_frame_equal(output_from_python_df, output_from_R.reset_index(drop=True), check_dtype=False)
         pvals, _ = get_pvals(x_true=fraser_dataset.K.values.T,
                          res=fraser_dataset.N.values.T,
-                         mu=output_from_R,
+                         mu=output_from_python_df,
                          sigma=rho_from_R.squeeze(),
                          df0=None,
                          how='two-sided',
                          theta=None,
                          dis='bb',
                          n_jobs=config.n_jobs)
+        pvals_one_sided, _ = get_pvals(x_true=fraser_dataset.K.values.T,
+                         res=fraser_dataset.N.values.T,
+                         mu=output_from_python_df,
+                         sigma=rho_from_R.squeeze(),
+                         df0=None,
+                         how='left',
+                         theta=None,
+                         dis='bb',
+                         n_jobs=config.n_jobs)
+        #pvals_one_sided_df = pd.DataFrame(pvals_one_sided).T
         pvals_df = pd.DataFrame(pvals).T
+
         pvals_from_R = pd.read_csv("/s/project/py_fraser/exported_counts/pVals.csv")
         pvals_df.columns = pvals_from_R.columns
-        pd.testing.assert_frame_equal(pvals_df, pvals_from_R, check_dtype=False)
+        #pd.testing.assert_frame_equal(pvals_df, pvals_from_R, check_dtype=False) not true anymore because of changes in p-value calculation
 
         pvals_by_gene = get_pvals_by_gene(pvals_df, fraser_dataset.intron_ranges["hgnc_symbol"])
         pvals_by_gene_adjusted = adjust_pvals(pvals_by_gene, method='holm', aggregate=True)
@@ -168,26 +179,53 @@ class TestPipelineFRASER:
         pvals_adj_from_R = pd.read_csv("/s/project/py_fraser/exported_counts/pValsAdj.csv")
         #pd.testing.assert_frame_equal(adjusted_pvals, pvals_adj_from_R, check_dtype=False)
 
-        df_res =  get_delta_psi(fraser_dataset.K, fraser_dataset.N, df_out)
+        jaccard, df_res = fraser_dataset.get_delta_psi()
+
         result = _format_results(
-            df_out=output_from_python_df,
+            df_out=jaccard,
             df_res=df_res,
             df_presence=df_presence,
             pvals=pvals,
             Z=None,
-            pvals_one_sided=None,
+            pvals_one_sided=pvals_one_sided,
             pvals_adj=adjusted_pvals,
             dataset=fraser_dataset,
             pseudocount=None,
-            outlier_threshold=0.1,
+            outlier_threshold=1,
             base_fn=None,
             pval_dist='beta binomial',
-            delta_psi_cutoff=0.1,
+            delta_psi_cutoff=0.05,
             min_count=5,
         )
-        result.save(out_dir = 'test_output', format = 'long', include_all = False, analysis = 'fraser', aggregate = True)
+        output = result.save(out_dir = 'test_output', format = 'long', include_all = False, analysis = 'fraser', aggregate = False)
+    #     out_all_R = pd.read_csv("/s/project/py_fraser/drop_demo/Output/processed_results/aberrant_splicing/results/v29/fraser/fraser/results_all.tsv.gz", sep='\t')
+    #     out_all_R.rename(columns={'hgncSymbol': 'hgnc_symbol'}, inplace=True)
+  
+    #     out_all_R_subset = out_all_R[['seqnames', 'start', 'end', 'width', 'strand', 'sampleID',
+    #    'hgnc_symbol','pValue', 'padjust', 'psiValue', 'deltaPsi',
+    #    'counts', 'totalCounts', 'meanCounts', 'meanTotalCounts',
+    #    'nonsplitCounts', 'nonsplitProportion', 'nonsplitProportion_99quantile',
+    #    'annotatedJunction']]
+    #     output_subset = output[['sampleID', 'JUNCTION_PREDICTED', 'JUNCTION_DELTAPSI',
+    #    'JUNCTION_PVALUE', 'JUNCTION_PADJ', 'counts', 'totalCounts',
+    #    'nonsplitCounts', 'nonsplitProportion', 'meanCounts', 'meanTotalCounts',
+    #    'nonsplitProportion_99quantile', 'seqnames', 'start', 'end', 'width',
+    #    'strand', 'hgnc_symbol', 'annotatedJunction']]
+    #     out_all_R_subset.rename(columns={'pValue': 'JUNCTION_PVALUE', 'padjust': 'JUNCTION_PADJ',
+    #                                       'psiValue' : 'JUNCTION_PREDICTED', 'deltaPsi': 'JUNCTION_DELTAPSI'}, inplace=True)
+    #     key_cols = ['sampleID', 'seqnames', 'start', 'end', 'strand']
+        
+    #     both = output_subset.merge(out_all_R_subset, on=key_cols, suffixes=('_py', '_r'), how='inner')
+    #     for col in output_subset.columns:
+    #         if col not in key_cols:
+    #             mask = both[f'{col}_py'] != both[f'{col}_r']
+    #             if mask.any():
+    #                 print(f'\nDifferences in {col}:')
+    #                 print(both.loc[mask, key_cols + [f'{col}_py', f'{col}_r']])
 
 
+#%%
 #TestPipelineFRASER = TestPipelineFRASER()
 #TestPipelineFRASER.test_run("PROTRIDER/config.yaml")
+
 

@@ -702,4 +702,17 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
             ).T,
         }
 
+    def get_delta_psi(self, pseudocount=1):
+        """
+        Compute delta psi = jaccard index - median of the jaccard index across samples for each junction
+
+        -------
+        jaccard : DataFrame [samples x junctions]
+        delta_psi : DataFrame [samples x junctions]
+        """
+        jaccard = (self.K + pseudocount) / (self.N + 2 * pseudocount)
+        row_median = jaccard.median(axis=1) 
+        delta_psi = jaccard.subtract(row_median, axis=0)
+        return jaccard.T, delta_psi.T
+
 
