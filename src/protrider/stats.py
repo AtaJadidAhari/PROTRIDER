@@ -126,23 +126,6 @@ def adjust_pvals(pvals, method='bh', group_ids=None, aggregate = False, n_jobs =
         pvals_adj[mask] = np.nan
     return pd.DataFrame(pvals_adj, index=pvals.index, columns=pvals.columns)
 
-def get_delta_psi(K, N, mu, pseudocount=0.1):
-    """
-    Compute delta psi = observed psi - predicted psi.
-
-    Parameters
-    ----------
-    K   : DataFrame [junctions x samples], observed split reads
-    N   : DataFrame [junctions x samples], total reads
-    mu  : DataFrame [junctions x samples], model-predicted mean (predictedMeans)
-    
-    Returns
-    -------
-    delta_psi : DataFrame [samples x junctions]
-    """
-    obs_psi = (K + pseudocount) / (N + 2 * pseudocount)
-    return pd.DataFrame(obs_psi - mu, index=K.index, columns=K.columns).T
-
 
 def _get_pv_norm(res, mu, sigma, how='two-sided'):
     mask = ~np.isfinite(res)

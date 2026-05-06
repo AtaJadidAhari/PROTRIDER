@@ -30,9 +30,9 @@ class Result:
     df_pvals_adj: pd.DataFrame
     log2fc: np.ndarray
     fc: np.ndarray
-    n_out_median: int
-    n_out_max: int
-    n_out_total: int
+    # n_out_median: int 
+    # n_out_max: int
+    # n_out_total: int
     pval_dist: str = 'gaussian'  # Distribution used for p-value computation
     outlier_threshold: float = 0.1  # Threshold for determining outliers (adjusted p value cutoff)
     delta_psi_cutoff: float = 0.1  # Threshold for delta PSI for fraser
@@ -43,9 +43,22 @@ class Result:
             df_res['JUNCTION_outlier'] = (df_res['JUNCTION_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() >= self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
         else:
             df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
+            outs_per_sample = df_res.groupby('sampleID')['PROTEIN_outlier'].sum().values
+            #outs_per_sample = np.sum(df_pvals_adj.values <= outlier_threshold, axis=1)
+            n_out_median = np.nanmedian(outs_per_sample)
+            n_out_max = np.nanmax(outs_per_sample)
+            n_out_total = np.nansum(outs_per_sample)
+            logger.info(
+                f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}',
+                f'Finished computing pvalues. No. outliers per sample in max: {n_out_max}',
+                f'Finished computing pvalues. No. outliers in total: {n_out_total}')
+
+            logger.info(
+                f'Finished computing pvalues. No. outliers per sample in median: {np.nanmedian(outs_per_sample)}')
+            df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
         return df_res
 
-    def add_features(self, df_res):
+    def add_fraser_aggregate_columns(self, df_res): 
         df_res['numSamplesPerGene'] = (df_res.groupby('hgnc_symbol')['sampleID'].transform('nunique'))
         df_res['numEventsPerGene'] = (df_res.groupby(['hgnc_symbol', 'sampleID'])['sampleID'].transform('count'))
         df_res['numSamplesPerJunc'] = (df_res.groupby(['seqnames', 'start', 'end', 'strand'])['sampleID'].transform('nunique'))
@@ -140,10 +153,12 @@ class Result:
                 if aggregate:
                     # Calculate gene-level p-values and adjusted p-values for fraser results
                     self.df_pvals = get_pvals_by_gene(self.df_pvals.T, self.dataset.intron_ranges["hgnc_symbol"]).T.dropna(how = 'all') # drop the one extra row that is generated
-                    self.df_pvals_adj = adjust_pvals(self.df_pvals, method='holm', aggregate=True)
-                
+                    self.df_pvals_adj = adjust_pvals(self.df_pvals.T, method='holm', aggregate=True)
+                                                     
+                self.df_pvals_adj = self.df_pvals_adj.T # samples * junctions
+
                 dfs_to_melt = {
-                    'JUNCTION_PREDICTED': self.df_out, # psi : samples * junctions
+                    'JUNCTION_PSI': self.df_out, # jaccard : samples * junctions
                     'JUNCTION_DELTAPSI': self.df_res, # delta psi : samples * junctions
                     'JUNCTION_PVALUE': self.df_pvals, #  samples * junctions
                     'JUNCTION_PADJ': self.df_pvals_adj, #  samples * junctions
@@ -180,6 +195,7 @@ class Result:
                     self.dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]],
                     ], axis=1)
                 df_res = df_res.merge(junc_meta, left_on='junctionID', right_index=True, how='left')
+                df_res.drop(columns= ['junctionID'], inplace=True, errors='ignore') 
 
             #df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(
             #    lambda x: x <= self.outlier_threshold)
@@ -188,19 +204,21 @@ class Result:
 
             if not include_all:
                 original_len = df_res.shape[0]
-                #df_res = df_res.query(f'{prefix.upper()}_outlier==True')
-                df_res = self.detect_outliers(df_res, analysis) 
+                df_res = self.detect_outliers(df_res, analysis)
+                df_res = df_res.query(f'{prefix.upper()}_outlier==True')
                 # TODO for fraser also calculate the extra columns
                 if not aggregate:
-                    df_res = self.add_features(df_res)
+                    df_res = self.add_fraser_aggregate_columns(df_res)
                 logger.info(
                         f'\t--- Removing non-significant sample-{prefix} combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
 
-            
+            df_res.sort_values(by=[f'{prefix.upper()}_PVALUE'], inplace=True, ascending=True)
             out_p = f"{out_dir}/{analysis}_summary.csv" 
-            print(df_res.head())
-            df_res.to_csv(out_p, index=None)
-            logger.info(f'Saved output summary with shape {df_res.shape} to {out_p}')
+            with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+                print(df_res.head())
+                print(df_res.shape)
+            #df_res.to_csv(out_p, index=None)
+            #logger.info(f'Saved output summary with shape {df_res.shape} to {out_p}')
             
             return df_res
     
@@ -886,7 +904,7 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     else:
         df_Z = Z
 
-    if not isinstance(pvals_one_sided, pd.DataFrame) and pvals_one_sided is not None:
+    if not isinstance(pvals_one_sided, pd.DataFrame) and pvals_one_sided is not None: # TODO add for fraser to plot
         df_pvals_one_sided = pd.DataFrame(pvals_one_sided)
         df_pvals_one_sided.columns = dataset.data.columns
         df_pvals_one_sided.index = dataset.data.index
@@ -902,20 +920,7 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     else:
         log2fc, fc = None, None
         
-    
-    n_out_median, n_out_max, n_out_total = None, None, None
-    if type(dataset) != FraserDataset:
-        outs_per_sample = np.sum(df_pvals_adj.values <= outlier_threshold, axis=1)
-        n_out_median = np.nanmedian(outs_per_sample)
-        n_out_max = np.nanmax(outs_per_sample)
-        n_out_total = np.nansum(outs_per_sample)
-        logger.info(
-            f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}')
-
-        logger.info(
-            f'Finished computing pvalues. No. outliers per sample in median: {np.nanmedian(outs_per_sample)}')
-    
 
     return Result(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence, df_pvals=df_pvals, df_Z=df_Z,
-                  df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc, n_out_median=n_out_median, n_out_max=n_out_max,
-                  n_out_total=n_out_total, pval_dist=pval_dist, outlier_threshold=outlier_threshold, delta_psi_cutoff = delta_psi_cutoff, min_count = min_count)
+                  df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc, 
+                  pval_dist=pval_dist, outlier_threshold=outlier_threshold, delta_psi_cutoff = delta_psi_cutoff, min_count = min_count)
