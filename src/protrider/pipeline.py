@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .model import train, train_val, MSEBCELoss, OmicAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
 from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset, OmicDataset, FraserDataset
-from .stats import get_pvals, fit_residuals, adjust_pvals, get_pvals_by_gene, get_delta_psi 
+from .stats import get_pvals, fit_residuals, adjust_pvals, get_pvals_by_gene
 from .plots import plot_cv_loss
 from .config import ProtriderConfig
 
