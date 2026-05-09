@@ -88,6 +88,9 @@ def get_pvals_by_gene(pvals, gene_names):
 
 
 def adjust_pvals(pvals, method='bh', group_ids=None, aggregate = False, n_jobs = -1): #TODO: add subset FDR  correction
+    is_df = isinstance(pvals, pd.DataFrame)
+    if is_df:
+        idx, cols = pvals.index, pvals.columns
     if method == 'holm':
         pvals_adj = pvals.copy().astype(float)
         if not aggregate:
@@ -124,7 +127,9 @@ def adjust_pvals(pvals, method='bh', group_ids=None, aggregate = False, n_jobs =
         mask = ~np.isfinite(pvals)
         pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=1, method=method)
         pvals_adj[mask] = np.nan
-    return pd.DataFrame(pvals_adj, index=pvals.index, columns=pvals.columns)
+    if is_df:
+        return pd.DataFrame(pvals_adj, index=idx, columns=cols)
+    return pvals_adj
 
 
 def _get_pv_norm(res, mu, sigma, how='two-sided'):
