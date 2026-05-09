@@ -40,7 +40,7 @@ class Result:
 
     def detect_outliers(self, df_res, analysis: str = "protrider") -> pd.DataFrame:
         if analysis == "fraser":
-            df_res['JUNCTION_outlier'] = (df_res['JUNCTION_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() >= self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
+            df_res['JUNCTION_outlier'] = (df_res['JUNCTION_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() > self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
         else:
             df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
             outs_per_sample = df_res.groupby('sampleID')['PROTEIN_outlier'].sum().values
@@ -154,8 +154,10 @@ class Result:
                     # Calculate gene-level p-values and adjusted p-values for fraser results
                     self.df_pvals = get_pvals_by_gene(self.df_pvals.T, self.dataset.intron_ranges["hgnc_symbol"]).T.dropna(how = 'all') # drop the one extra row that is generated
                     self.df_pvals_adj = adjust_pvals(self.df_pvals.T, method='holm', aggregate=True)
-                                                     
-                self.df_pvals_adj = self.df_pvals_adj.T # samples * junctions
+                
+                if self.df_pvals_adj.shape != self.df_pvals.shape:
+                    self.df_pvals_adj = self.df_pvals_adj.T # samples * junctions
+
 
                 dfs_to_melt = {
                     'JUNCTION_PSI': self.df_out, # jaccard : samples * junctions
@@ -164,6 +166,7 @@ class Result:
                     'JUNCTION_PADJ': self.df_pvals_adj, #  samples * junctions
                     **self.dataset.calculate_counts()
                 }   
+
 
             else:
                 dfs_to_melt = {
@@ -179,6 +182,7 @@ class Result:
             
                 if self.df_presence is not None:
                     dfs_to_melt['pred_presence_probability'] = self.df_presence
+
 
             # Concatenate all dataframes along columns with a multi-index
             combined = pd.concat(dfs_to_melt, axis=1)
@@ -214,9 +218,6 @@ class Result:
 
             df_res.sort_values(by=[f'{prefix.upper()}_PVALUE'], inplace=True, ascending=True)
             out_p = f"{out_dir}/{analysis}_summary.csv" 
-            with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-                print(df_res.head())
-                print(df_res.shape)
             #df_res.to_csv(out_p, index=None)
             #logger.info(f'Saved output summary with shape {df_res.shape} to {out_p}')
             
