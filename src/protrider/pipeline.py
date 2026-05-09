@@ -879,8 +879,8 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
 
-def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, 
-                    pseudocount, outlier_threshold, base_fn, pval_dist, delta_psi_cutoff, min_count):
+def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset,
+                    pseudocount, outlier_threshold, base_fn, pval_dist, delta_psi_cutoff=0.1, min_count=5):
     # Store as df
     if not isinstance(pvals_adj, pd.DataFrame):
         df_pvals_adj = pd.DataFrame(pvals_adj)
