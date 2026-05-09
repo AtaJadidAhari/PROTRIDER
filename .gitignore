@@ -9,3 +9,4 @@ build
 .vscode/*
 **/.pytest_cache
 .venv/
+/tests/local_test_fraser.ipynb

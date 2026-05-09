@@ -459,16 +459,17 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         # calculate Jaccard index
         print("Calculating Jaccard index")
         start = time.time()
-        self.jaccard_index = self.K / self.N
-        
-        # Jaccard filter expression
-        self.filter_expression_jaccard()
-        self.jaccard_index = self.jaccard_index.loc[self.passed_expression, :]
-        duration = time.time() - start
-        print(f"Jaccard index calculated and filtered in {duration:.2f} seconds.")
 
         # create X and center it
         self.data = self.create_data()
+
+        self.jaccard_index = self.K / self.N
+
+        # Jaccard filter expression
+        self.filter_expression_jaccard()
+        #self.jaccard_index = self.jaccard_index.loc[self.passed_expression, :]
+        duration = time.time() - start
+        print(f"Jaccard index calculated and filtered in {duration:.2f} seconds.")
     
         self.data =  pd.DataFrame(self.data, index=self.samples_cols, columns=self.split_reads.index)
         
@@ -702,17 +703,18 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
             ).T,
         }
 
-    def get_delta_psi(self, pseudocount=1):
+    def get_delta_psi(self):
         """
         Compute delta psi = jaccard index - median of the jaccard index across samples for each junction
+        K and N have the shape junctions x samples
 
         -------
         jaccard : DataFrame [samples x junctions]
         delta_psi : DataFrame [samples x junctions]
         """
-        jaccard = (self.K + pseudocount) / (self.N + 2 * pseudocount)
-        row_median = jaccard.median(axis=1) 
-        delta_psi = jaccard.subtract(row_median, axis=0)
-        return jaccard.T, delta_psi.T
+        row_median = self.jaccard_index.median(axis=1, skipna=True) 
+        #self.row_median = row_median
+        delta_psi = self.jaccard_index.subtract(row_median, axis=0)
+        return pd.DataFrame(np.round(delta_psi.T, decimals=2))
 
 
