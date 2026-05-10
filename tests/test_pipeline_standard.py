@@ -127,8 +127,8 @@ class TestPipelineStandardMode:
             # Save in wide format
             result.save(tmp_dir, format='wide')
             
-            # Check that files were created
-            out_dir = Path(tmp_dir)
+            # Check that files were created (save() organizes under {analysis}/ subfolder)
+            out_dir = Path(tmp_dir) / 'protrider'
             assert (out_dir / 'pvals.csv').exists()
             assert (out_dir / 'pvals_adj.csv').exists()
             assert (out_dir / 'zscores.csv').exists()

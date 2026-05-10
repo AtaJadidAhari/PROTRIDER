@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from typing import Union, Tuple, Literal, Optional
@@ -49,9 +50,7 @@ class Result:
             n_out_max = np.nanmax(outs_per_sample)
             n_out_total = np.nansum(outs_per_sample)
             logger.info(
-                f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}',
-                f'Finished computing pvalues. No. outliers per sample in max: {n_out_max}',
-                f'Finished computing pvalues. No. outliers in total: {n_out_total}')
+                f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}, max: {n_out_max}, total: {n_out_total}')
 
             logger.info(
                 f'Finished computing pvalues. No. outliers per sample in median: {np.nanmedian(outs_per_sample)}')
@@ -80,7 +79,9 @@ class Result:
             DataFrame if format="long", None if format="wide"
             
         """
+        summary_dir = out_dir
         out_dir = f"{out_dir}/{analysis}"
+        os.makedirs(out_dir, exist_ok=True)
         if format == "wide":
             logger.info('=== Saving results in wide format ===')
             
@@ -210,16 +211,15 @@ class Result:
                 original_len = df_res.shape[0]
                 df_res = self.detect_outliers(df_res, analysis)
                 df_res = df_res.query(f'{prefix.upper()}_outlier==True')
-                # TODO for fraser also calculate the extra columns
-                if not aggregate:
+                if analysis == 'fraser' and not aggregate:
                     df_res = self.add_fraser_aggregate_columns(df_res)
                 logger.info(
                         f'\t--- Removing non-significant sample-{prefix} combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
 
             df_res.sort_values(by=[f'{prefix.upper()}_PVALUE'], inplace=True, ascending=True)
-            out_p = f"{out_dir}/{analysis}_summary.csv" 
-            #df_res.to_csv(out_p, index=None)
-            #logger.info(f'Saved output summary with shape {df_res.shape} to {out_p}')
+            out_p = f"{summary_dir}/{analysis}_summary.csv"
+            df_res.to_csv(out_p, index=None)
+            logger.info(f'Saved output summary with shape {df_res.shape} to {out_p}')
             
             return df_res
     
