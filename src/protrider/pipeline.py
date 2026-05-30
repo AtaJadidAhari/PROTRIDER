@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .model import train, train_val, MSEBCELoss, OmicAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
 from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset, OmicDataset, FraserDataset
-from .stats import get_pvals, fit_residuals, adjust_pvals, get_pvals_by_gene
+from .stats import get_pvals, fit_residuals, adjust_pvals
 from .plots import plot_cv_loss
 from .config import ProtriderConfig
 
@@ -41,7 +41,7 @@ class Result:
 
     def detect_outliers(self, df_res, analysis: str = "protrider") -> pd.DataFrame:
         if analysis == "fraser":
-            df_res['JUNCTION_outlier'] = (df_res['JUNCTION_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() > self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
+            df_res['JUNCTION_outlier'] = (df_res['JUNCTION_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() >= self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
         else:
             df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
             outs_per_sample = df_res.groupby('sampleID')['PROTEIN_outlier'].sum().values
@@ -57,11 +57,12 @@ class Result:
             df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
         return df_res
 
-    def add_fraser_aggregate_columns(self, df_res): 
+    def add_fraser_aggregate_columns(self, df_res):
         df_res['numSamplesPerGene'] = (df_res.groupby('hgnc_symbol')['sampleID'].transform('nunique'))
         df_res['numEventsPerGene'] = (df_res.groupby(['hgnc_symbol', 'sampleID'])['sampleID'].transform('count'))
         df_res['numSamplesPerJunc'] = (df_res.groupby(['seqnames', 'start', 'end', 'strand'])['sampleID'].transform('nunique'))
         return df_res
+
 
     def save(self, out_dir: str, format: Literal["wide", "long"] = "wide", 
             include_all: bool = False, analysis: str = "protrider", aggregate: bool = False) -> Optional[pd.DataFrame]:
@@ -147,27 +148,18 @@ class Result:
             logger.info('=== Saving results in long format ===')
             
             # Stack all dataframes at once for efficient melting
-            import pandas as pd
+            if self.df_pvals.shape != self.df_pvals_adj.shape:
+                self.df_pvals_adj = self.df_pvals_adj.T
 
             # Create a multi-index dataframe with all values
-            if analysis == 'fraser': 
-                if aggregate:
-                    # Calculate gene-level p-values and adjusted p-values for fraser results
-                    self.df_pvals = get_pvals_by_gene(self.df_pvals.T, self.dataset.intron_ranges["hgnc_symbol"]).T.dropna(how = 'all') # drop the one extra row that is generated
-                    self.df_pvals_adj = adjust_pvals(self.df_pvals.T, method='holm', aggregate=True)
-                
-                if self.df_pvals_adj.shape != self.df_pvals.shape:
-                    self.df_pvals_adj = self.df_pvals_adj.T # samples * junctions
-
-
+            if analysis == 'fraser':
                 dfs_to_melt = {
-                    'JUNCTION_PSI': self.df_out, # jaccard : samples * junctions
-                    'JUNCTION_DELTAPSI': self.df_res, # delta psi : samples * junctions
-                    'JUNCTION_PVALUE': self.df_pvals, #  samples * junctions
-                    'JUNCTION_PADJ': self.df_pvals_adj, #  samples * junctions
+                    'JUNCTION_PSI': self.df_out,         # samples × junctions
+                    'JUNCTION_DELTAPSI': self.df_res,    # samples × junctions
+                    'JUNCTION_PVALUE': self.df_pvals,    # samples × junctions
+                    'JUNCTION_PADJ': self.df_pvals_adj,  # samples × junctions
                     **self.dataset.calculate_counts()
-                }   
-
+                }
 
             else:
                 dfs_to_melt = {
@@ -189,7 +181,8 @@ class Result:
             combined = pd.concat(dfs_to_melt, axis=1)
         
             # Melt once instead of multiple times (use future_stack=True for pandas 2.1+)
-            df_res = combined.stack(future_stack=True).reset_index()
+            #df_res = combined.stack(future_stack=True).reset_index()
+            df_res = combined.stack().reset_index()
             
             prefix = 'junction' if analysis == 'fraser' else 'protein'
             df_res.columns = ['sampleID', f'{prefix}ID'] + list(dfs_to_melt.keys())
@@ -200,10 +193,13 @@ class Result:
                     self.dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]],
                     ], axis=1)
                 df_res = df_res.merge(junc_meta, left_on='junctionID', right_index=True, how='left')
-                df_res.drop(columns= ['junctionID'], inplace=True, errors='ignore') 
+                df_res.drop(columns=['junctionID'], inplace=True, errors='ignore')
 
-            #df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(
-            #    lambda x: x <= self.outlier_threshold)
+                if aggregate:
+                    pass
+                    #df_res = aggregate_to_gene_level(self.) # TODO
+                else:
+                    df_res = self.add_fraser_aggregate_columns(df_res)
 
             df_res['pvalDistribution'] = self.pval_dist
 
@@ -211,8 +207,6 @@ class Result:
                 original_len = df_res.shape[0]
                 df_res = self.detect_outliers(df_res, analysis)
                 df_res = df_res.query(f'{prefix.upper()}_outlier==True')
-                if analysis == 'fraser' and not aggregate:
-                    df_res = self.add_fraser_aggregate_columns(df_res)
                 logger.info(
                         f'\t--- Removing non-significant sample-{prefix} combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
 
@@ -471,25 +465,38 @@ def _run_protrider_standard(
     """
     # 1. Initialize dataset
     logger.info('Initializing dataset')
-    if config.analysis == "protrider":
-        dataset = ProtriderDataset(input_intensities=input_intensities,
-                               index_col=config.index_col,
-                               sa_file=sample_annotation,
-                               cov_used=config.cov_used,
-                               log_func=config.log_func,
-                               maxNA_filter=config.max_allowed_NAs_per_protein,
-                               device=config.device_torch,
-                               input_format=config.input_format)
-    elif config.analysis == "outrider":
-        dataset = OutriderDataset(input_intensities=input_intensities,
-                               index_col=config.index_col,
-                               sa_file=sample_annotation,
-                               cov_used=config.cov_used,
-                               log_func=config.log_func,
-                               fpkm_cutoff=config.fpkmCutoff,
-                               gtf=config.gtf,
-                               device=config.device_torch,
-                               input_format=config.input_format)
+    # if config.analysis == "protrider":
+    #     dataset = ProtriderDataset(input_intensities=input_intensities,
+    #                            index_col=config.index_col,
+    #                            sa_file=sample_annotation,
+    #                            cov_used=config.cov_used,
+    #                            log_func=config.log_func,
+    #                            maxNA_filter=config.max_allowed_NAs_per_protein,
+    #                            device=config.device_torch,
+    #                            input_format=config.input_format)
+    # elif config.analysis == "outrider":
+    #     dataset = OutriderDataset(input_intensities=input_intensities,
+    #                            index_col=config.index_col,
+    #                            sa_file=sample_annotation,
+    #                            cov_used=config.cov_used,
+    #                            log_func=config.log_func,
+    #                            fpkm_cutoff=config.fpkmCutoff,
+    #                            gtf=config.gtf,
+    #                            device=config.device_torch,
+    #                            input_format=config.input_format)
+    dataset  = OmicDataset(analysis=config.analysis,
+                           split_reads=[config.split_reads], 
+                           unsplit_reads=[config.unsplit_reads],
+                           input_intensities=input_intensities,
+                           index_col=config.index_col,
+                           sa_file=sample_annotation,
+                           cov_used=config.cov_used,
+                           log_func=config.log_func,
+                           maxNA_filter=config.max_allowed_NAs_per_protein,
+                           fpkm_cutoff=config.fpkmCutoff,
+                           gtf=config.gtf,
+                           device=config.device_torch,
+                           input_format=config.input_format)
 
     # 2. Find latent dim
     logger.info('Finding latent dimension')
@@ -553,22 +560,22 @@ def _run_protrider_standard(
     logger.info('Computing statistics')
     model_input = model if config.analysis != "protrider" else None
     mu, sigma, df0, df_res = fit_residuals(dataset, df_out, model_input, config)
-    """if config.analysis == "protrider":
-        df_res = dataset.data - df_out  # log data - pred data
-        mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
-    elif config.analysis == "outrider":
-        df_out_clamped = np.clip(df_out, -700, 700)
-        df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
-        df_out = df_res
-        sigma = None
-        df0 = None
+    # if config.analysis == "protrider":
+    #     df_res = dataset.data - df_out  # log data - pred data
+    #     mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
+    # elif config.analysis == "outrider":
+    #     df_out_clamped = np.clip(df_out, -700, 700)
+    #     df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
+    #     df_out = df_res
+    #     sigma = None
+    #     df0 = None
 
-        mu, theta = model.get_dispersion_parameters()
+    #     mu, theta = model.get_dispersion_parameters()
 
-        if mu is None:
-            # Fitting NB for outrider if it is not set yet
-            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64)) #TODO fro fraser
-            mu, theta = model.get_dispersion_parameters()"""
+    #     if mu is None:
+    #         # Fitting NB for outrider if it is not set yet
+    #         model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64)) #TODO fro fraser
+    #         mu, theta = model.get_dispersion_parameters()
 
     pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
                          res=df_res.values,
