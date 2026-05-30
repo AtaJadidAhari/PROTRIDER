@@ -31,14 +31,15 @@ def read(input_intensities: str, index_col: str = None, input_format: str = "pro
             compression = 'gzip'
             suffixes = suffixes[:-1]
         if suffixes[-1] == '.csv':
-            temp_data = pd.read_csv(input_intensity, compression=compression).set_index(index_col)
-        elif suffixes[-1] == '.tsv':
-            temp_data = pd.read_csv(input_intensity, sep='\t', compression=compression)
-            if temp_data.shape[1] == 1:
-                temp_data = pd.read_csv(input_intensity, sep=',', compression=compression)
-            print("TSV read with head: ", temp_data.head())
+            temp_data = pd.read_csv(input_intensity, compression=compression)# TODO
             if index_col is not None:
                 temp_data = temp_data.set_index(index_col)
+        # elif suffixes[-1] == '.tsv':
+        #     temp_data = pd.read_csv(input_intensity, sep='\t', compression=compression)
+        #     if temp_data.shape[1] == 1:
+        #         temp_data = pd.read_csv(input_intensity, sep=',', compression=compression)
+        #     if index_col is not None:
+        #         temp_data = temp_data.set_index(index_col)
         elif suffixes[-1] == '.parquet':
             temp_data = pd.read_parquet(input_intensity).set_index(index_col)
         else:

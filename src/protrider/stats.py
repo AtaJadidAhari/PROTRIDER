@@ -6,6 +6,8 @@ import torch
 from joblib import Parallel, delayed
 import logging
 from statsmodels.stats.multitest import multipletests
+from collections import defaultdict
+
 
 __all__ = ["fit_residuals", "get_pvals", "adjust_pvals"]
 
@@ -53,7 +55,7 @@ def fit_residuals(dataset, df_out, model, config):
                                 torch.tensor(df_out.values, dtype=torch.float64)) 
             mu, rho = model.get_dispersion_parameters()
         sigma = rho
-        df_res = mu # ASK: duplicates?
+        df_res = dataset.N.T
 
     return mu, sigma, df0, df_res
 
@@ -78,24 +80,42 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
         pvals, z = get_pv_bb(K=x_true, N=res, mu=mu, rho=sigma, how=how) 
     return pvals, z
 
-def get_pvals_by_gene(pvals, gene_names):
-    pvals = pvals.copy()
-    genes_exploded = gene_names.explode() # duplicate for junctions with multiple genes
-    pvals_exploded = pvals.loc[genes_exploded.index].copy()
-    pvals_exploded["gene_name"] = genes_exploded.values
-    gene_min = pvals_exploded.groupby("gene_name").min()
-    return pvals_exploded["gene_name"].map(gene_min.to_dict(orient="index")).apply(pd.Series)
+def perform_fdr_correction(pvals, method='bh', axis = 1):
+    mask = ~np.isfinite(pvals)
+    pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=axis, method=method)
+    pvals_adj[mask] = np.nan
+    return pvals_adj
+
+def get_pvals_per_gene(pvals, group_ids):
+    gene_to_row_indices = defaultdict(list)
+    for row_i, entry in enumerate(group_ids):
+        if pd.isna(entry):
+            continue
+        for gene in str(entry).split(';'):
+            gene = gene.strip()
+            if gene:
+                gene_to_row_indices[gene].append(row_i)
+
+    records = []
+    for gene, row_indices in gene_to_row_indices.items():
+        gene_pvals = pvals.iloc[row_indices]  # (n_junctions, n_samples)
+        # per sample, find the junction with the minimum p-value
+        min_junctions = gene_pvals.idxmin(axis=0)  # Series: sample -> junction with min p
+        for sample, junction in min_junctions.items():
+            records.append({'gene': gene, 'junction': junction, 'sample': sample,
+                            'pvalue': gene_pvals.loc[junction, sample]})
+
+    return pd.DataFrame(records)
 
 
-def adjust_pvals(pvals, method='bh', group_ids=None, aggregate = False, n_jobs = -1): #TODO: add subset FDR  correction
-    is_df = isinstance(pvals, pd.DataFrame)
-    if is_df:
-        idx, cols = pvals.index, pvals.columns
+
+def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs = -1, aggregate=False): #TODO: add subset FDR  correction
     if method == 'holm':
         pvals_adj = pvals.copy().astype(float)
+        if group_ids is None:
+            raise ValueError("group_ids must be provided for Holm's correction on junction level.")
+        
         if not aggregate:
-            if group_ids is None:
-                raise ValueError("group_ids must be provided for Holm's correction on junction level.")
             # Step 1: Holm FWER
             group_ids_arr = np.asarray(group_ids, dtype=object)
             unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
@@ -113,24 +133,20 @@ def adjust_pvals(pvals, method='bh', group_ids=None, aggregate = False, n_jobs =
                         result[group_mask] = np.min(adj)
                 return sample, result
             
-            results = Parallel(n_jobs=n_jobs)(delayed(process_sample)(sample) for sample in pvals.columns)
-
-            for sample, result in results:
+            for sample, result in Parallel(n_jobs=n_jobs)(delayed(process_sample)(s) for s in pvals.columns):
                 pvals_adj[sample] = result
 
-        # Step 2: Benjamini-Yekutieli 
-        mask = ~np.isfinite(pvals)
-        pvals_adj = _false_discovery_control(np.where(mask, 1, pvals_adj), axis=0, method='by')
-        pvals_adj[mask] = np.nan
-        print("Adjusted p-values (BY) computed across unique sites.")
+        #Step 2: Benjamini-Yekutieli
+        else:
+            # across junctions/genes (rows)
+            pvals_adj = perform_fdr_correction(pvals_adj, method='by', axis = 0)
+            print("Adjusted p-values (BY) computed across unique sites.")
     else:
-        mask = ~np.isfinite(pvals)
-        pvals_adj = _false_discovery_control(np.where(mask, 1, pvals), axis=1, method=method)
-        pvals_adj[mask] = np.nan
-    if is_df:
-        return pd.DataFrame(pvals_adj, index=idx, columns=cols)
-    return pvals_adj
+        pvals_adj = perform_fdr_correction(pvals, method=method, axis = 1)
 
+    if isinstance(pvals, pd.DataFrame):
+        return pd.DataFrame(pvals_adj, index=pvals.index, columns=pvals.columns)
+    return pvals_adj
 
 def _get_pv_norm(res, mu, sigma, how='two-sided'):
     mask = ~np.isfinite(res)

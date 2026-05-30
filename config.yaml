@@ -1,13 +1,16 @@
 # path to output directory to store result files
-out_dir: output
+out_dir: output_kremer
 
 # csv input file containing intensities. Columns are samples and rows are proteins.
 input_intensities: "sample_data/protrider_sample_dataset.tsv"
-split_reads: "/data/ceph/hdd/project/py_fraser/PROTRIDER/sample_data/fraser/split_reads.tsv"
-unsplit_reads: "/data/ceph/hdd/project/py_fraser/PROTRIDER/sample_data/fraser/unsplit_reads.tsv"
+#split_reads: "/data/ceph/hdd/project/py_fraser/PROTRIDER/sample_data/fraser/split_reads.tsv"
+#unsplit_reads: "/data/ceph/hdd/project/py_fraser/PROTRIDER/sample_data/fraser/unsplit_reads.tsv"
+split_reads: "/s/project/py_fraser/PROTRIDER/sample_data/fraser/kremer/kremer_s.csv"
+unsplit_reads: "/s/project/py_fraser/PROTRIDER/sample_data/fraser/kremer/kremer_u.csv"
 
 # column name in the input file indicating the column name containing the protein names/IDs
-index_col: "protein_ID"
+#index_col: "protein_ID"
+input_format: "introns_as_rows"
 
 # csv file containing sample annotations
 # sample_annotation: sample_data/sample_annotations.tsv
@@ -65,7 +68,7 @@ cross_val: False # run protrider in k-fold cross-validation mode; only implement
 #fit_every_fold: False # fit residual model for every fold; defaults to false
 
 ## Stat params
-pval_dist: 't' # Distribution choice for P-value computation. Options: gaussian, t, nb
+pval_dist: 'bb' # Distribution choice for P-value computation. Options: gaussian, t, nb, bb
 pval_adj: 'by' # Multiple testing correction. Options: by, bh
 pval_sided: 'two-sided'
 pseudocount: 0.01 # for FC computation

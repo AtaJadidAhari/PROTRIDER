@@ -439,7 +439,7 @@ class OmicDataset(Dataset):
 
 class FraserDataset(Dataset, PCADataset): # inherit omic?
     def __init__(self, split_reads: str, unsplit_reads: str, sa_file: Optional[str] = None,
-                 cov_used: Optional[list] = None):
+                 cov_used: Optional[list] = None, gtf: Optional[str] = None, **kwargs):
         # read split and unsplit reads
         print("Reading split and unsplit reads")
         self.split_reads = read(input_intensities=split_reads, input_format = 'introns_as_rows') # ASK: index col??
@@ -493,6 +493,14 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
             "End": self.split_reads["end"],
             "Strand": self.split_reads["strand"],
         })
+
+        # Annotate junctions with gene symbols if a GTF file is provided
+        if gtf is not None:
+            try:
+                print("Annotating junctions with GTF")
+                self.annotate_junctions(gtf)
+            except Exception as e:
+                logger.warning(f"Junction annotation failed: {e}. Proceeding without annotation.")
 
         # Input and output of autoencoder is:
         # uncentered data without NaNs, replacing NANs with means
@@ -706,14 +714,13 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
     def get_delta_psi(self):
         """
         Compute delta psi = jaccard index - median of the jaccard index across samples for each junction
-        K and N have the shape junctions x samples
+        jaccard_index has the shape junctions x samples
 
         -------
-        jaccard : DataFrame [samples x junctions]
         delta_psi : DataFrame [samples x junctions]
         """
         row_median = self.jaccard_index.median(axis=1, skipna=True) 
-        #self.row_median = row_median
+        self.row_median = row_median
         delta_psi = self.jaccard_index.subtract(row_median, axis=0)
         return pd.DataFrame(np.round(delta_psi.T, decimals=2))
 
