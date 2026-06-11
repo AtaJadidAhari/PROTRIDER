@@ -57,8 +57,7 @@ def preprocess_protein_intensities(data, log_func, maxNA_filter, normalize=True)
         log_func (callable): Function to apply log transformation.
         maxNA_filter (float): Maximum allowed proportion of NA values.
         normalize (bool): Whether to apply DESeq2 size-factor normalization
-            before log transformation. Set to False for inputs that are already
-            relative abundances (e.g. DIA MaxLFQ scores). Only applies when
+            before log transformation. Only applies when
             ``log_func`` is not None.
 
     Returns:

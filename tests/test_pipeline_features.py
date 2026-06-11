@@ -78,7 +78,7 @@ class TestPipelineAdvancedFeatures:
             assert isinstance(result, Result)
     
     def test_skip_normalization(self, protein_intensities_path, protein_intensities_index_col):
-        """Test running with DESeq2 size-factor normalization disabled (e.g. DIA MaxLFQ)."""
+        """Test running with DESeq2 size-factor normalization disabled"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = ProtriderConfig(
                 out_dir=tmp_dir,

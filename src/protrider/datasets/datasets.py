@@ -54,8 +54,7 @@ class ProtriderDataset(Dataset, PCADataset):
                          - "proteins_as_rows": proteins are rows, samples are columns (default)
                          - "proteins_as_columns": samples are rows, proteins are columns
             normalize: Whether to apply DESeq2 size-factor normalization before
-                      log transformation (default: True). Set to False for
-                      relative abundance scores such as DIA MaxLFQ.
+                      log transformation (default: True).
         """
         super().__init__()
         self.device = device

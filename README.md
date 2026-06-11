@@ -18,6 +18,7 @@ Have a look at our [paper](https://doi.org/10.1093/bioinformatics/btaf628) for i
   - [🗂️ Configuration](#️-configuration)
   - [📤 Output](#-output)
   - [▶️ Run](#️-run)
+- [🛠️ Developers](#️-developers)
 - [📄 License](#-license)
 - [📚 Citation](#-citation)
 
@@ -78,7 +79,6 @@ An example dataset is included under `sample_data/`.
 | `input_intensities` | Path to protein intensities file |
 | `max_allowed_NAs_per_protein` | Maximum percentage of missing values per protein (default: `0.3`) |
 | `log_func_name` | Transformation funtion to apply to the data before model fitting: `log` (default), `log10`, `log2`, or `null` (if already log transformed) |
-| `normalize` | Whether to apply DESeq2 size-factor normalization before log transformation (default: `True`). Set to `False` for relative abundance scores such as DIA MaxLFQ |
 | `sample_annotation` | Path to sample annotations file (optional) |
 | `index_col` | Column name containing protein IDs |
 | `cov_used` | List of covariate column names from the annotation file (optional) |
@@ -195,6 +195,41 @@ result.fc              # fold changes
 ```
 
 </details>
+
+## 🛠️ Developers
+
+This project uses [`uv`](https://docs.astral.sh/uv/) for dependency management and development:
+
+```bash
+uv sync --all-groups        # install runtime + dev dependencies
+uv run pytest tests/ -q     # run the test suite
+```
+
+### Releasing a new version
+
+PROTRIDER is published to [PyPI](https://pypi.org/project/protrider/) automatically by the
+[`publish.yml`](.github/workflows/publish.yml) GitHub Actions workflow, which is triggered by
+pushing a Git tag matching `v*`. The package version is derived from the tag by
+[`setuptools-scm`](https://setuptools-scm.readthedocs.io/), so the tag is the single source of
+truth — there is no version number to bump in `pyproject.toml`.
+
+To cut a release:
+
+```bash
+# 1. Make sure main is up to date and tests pass
+git checkout main
+git pull
+
+# 2. Create an annotated tag following semantic versioning (vMAJOR.MINOR.PATCH)
+git tag -a v1.2.3 -m "Release v1.2.3"
+
+# 3. Push the tag to trigger the publish workflow
+git push origin v1.2.3
+```
+
+Pushing the tag builds the package with `uv build` and publishes it to PyPI via trusted
+publishing (no API token required). Track progress on the
+[Actions](https://github.com/gagneurlab/PROTRIDER/actions/workflows/publish.yml) page.
 
 ## 📄 License
 
