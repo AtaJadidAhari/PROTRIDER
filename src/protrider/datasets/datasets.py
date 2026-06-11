@@ -38,7 +38,7 @@ class ProtriderDataset(Dataset, PCADataset):
                  sa_file: Optional[str] = None,
                  cov_used: Optional[list] = None, log_func: Callable = np.log,
                  maxNA_filter: float = 0.3, device: torch.device = torch.device('cpu'),
-                 input_format: str = "proteins_as_rows"):
+                 input_format: str = "proteins_as_rows", normalize: bool = True):
         """Initialize ProtriderDataset.
         
         Args:
@@ -53,6 +53,9 @@ class ProtriderDataset(Dataset, PCADataset):
             input_format: Format of input file:
                          - "proteins_as_rows": proteins are rows, samples are columns (default)
                          - "proteins_as_columns": samples are rows, proteins are columns
+            normalize: Whether to apply DESeq2 size-factor normalization before
+                      log transformation (default: True). Set to False for
+                      relative abundance scores such as DIA MaxLFQ.
         """
         super().__init__()
         self.device = device
@@ -60,7 +63,7 @@ class ProtriderDataset(Dataset, PCADataset):
         # Read and preprocess protein intensities
         unfiltered_data = read_protein_intensities(input_intensities, index_col, input_format)
         self.data, self.raw_data, self.size_factors = preprocess_protein_intensities(
-            unfiltered_data, log_func, maxNA_filter
+            unfiltered_data, log_func, maxNA_filter, normalize=normalize
         )
 
         # Read and preprocess covariates

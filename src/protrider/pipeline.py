@@ -436,7 +436,8 @@ def run(config: ProtriderConfig) -> Tuple[Result, ModelInfo, FitParameters, Grid
                                log_func=config.log_func,
                                maxNA_filter=config.max_allowed_NAs_per_protein,
                                device=config.device_torch,
-                               input_format=config.input_format)
+                               input_format=config.input_format,
+                               normalize=config.normalize)
 
     # 2. Determine checkpoint path and try to load existing model
     model = None

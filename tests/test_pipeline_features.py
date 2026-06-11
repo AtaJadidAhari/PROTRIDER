@@ -77,6 +77,26 @@ class TestPipelineAdvancedFeatures:
             
             assert isinstance(result, Result)
     
+    def test_skip_normalization(self, protein_intensities_path, protein_intensities_index_col):
+        """Test running with DESeq2 size-factor normalization disabled (e.g. DIA MaxLFQ)."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = ProtriderConfig(
+                out_dir=tmp_dir,
+                input_intensities=str(protein_intensities_path),
+                index_col=protein_intensities_index_col,
+                normalize=False,  # Skip DESeq2 normalization
+                n_epochs=2,
+                find_q_method='5',
+                verbose=False
+            )
+
+            result, *_ = run(config)
+
+            assert isinstance(result, Result)
+            assert result.df_pvals.notna().any().any()
+            # No size factors should be computed when normalization is skipped
+            assert result.dataset.size_factors is None
+
     def test_different_pval_distributions(self, protein_intensities_path, protein_intensities_index_col):
         """Test using different distributions for p-value calculation."""
         for dist in ["gaussian", "t"]:

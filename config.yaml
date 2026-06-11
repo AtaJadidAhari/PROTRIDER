@@ -16,6 +16,9 @@ max_allowed_NAs_per_protein: 0.3
 # transformation funtion to apply to the data before model fitting. options are log10, log2, and log
 # set this to null if the data is already log-transformed
 log_func_name: "log"
+# whether to apply DESeq2 size-factor normalization before log transformation.
+# set to False for relative abundance scores such as DIA MaxLFQ
+normalize: True
 
 # names of columns in the sample annotation file to be passed as covariates to the autoencoder.
 # leaving this empty results in no covariates passed to the model

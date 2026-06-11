@@ -49,13 +49,17 @@ def read_protein_intensities(input_intensities: str, index_col: str, input_forma
 
     return data
 
-def preprocess_protein_intensities(data, log_func, maxNA_filter):
+def preprocess_protein_intensities(data, log_func, maxNA_filter, normalize=True):
     """Preprocess protein intensities data.
 
     Args:
         data (pd.DataFrame): Input protein intensities data.
         log_func (callable): Function to apply log transformation.
         maxNA_filter (float): Maximum allowed proportion of NA values.
+        normalize (bool): Whether to apply DESeq2 size-factor normalization
+            before log transformation. Set to False for inputs that are already
+            relative abundances (e.g. DIA MaxLFQ scores). Only applies when
+            ``log_func`` is not None.
 
     Returns:
         tuple: Processed protein intensities, filtered (no NAs) raw data, and size factors.
@@ -75,15 +79,19 @@ def preprocess_protein_intensities(data, log_func, maxNA_filter):
             f"Filtering out {np.sum(filtered > maxNA_filter)} proteins with too many missing values. New shape: {data.shape}")
         raw_data = copy.deepcopy(processed_data)  ## for storing output
 
-        # normalize data with deseq2
-        size_factors = None
-        deseq_out, size_factors = deseq2_norm(filtered_data.replace(np.nan, 0,
-                                                                inplace=False))
-        ### check that deseq2 worked, otherwise ignore
-        if deseq_out.isna().sum().sum() == 0:
-            processed_data = deseq_out
-            processed_data.replace(0, np.nan, inplace=True)
-            size_factors = size_factors
+        if normalize:
+            # normalize data with deseq2
+            deseq_out, size_factors = deseq2_norm(filtered_data.replace(np.nan, 0,
+                                                                    inplace=False))
+            ### check that deseq2 worked, otherwise ignore
+            if deseq_out.isna().sum().sum() == 0:
+                processed_data = deseq_out
+                processed_data.replace(0, np.nan, inplace=True)
+            else:
+                size_factors = None
+        else:
+            logger.info("Skipping DESeq2 size-factor normalization.")
+            processed_data = filtered_data
 
         # log data
         processed_data = log_func(processed_data)

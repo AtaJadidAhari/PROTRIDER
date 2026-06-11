@@ -30,6 +30,9 @@ class ProtriderConfig:
     # Preprocessing params
     max_allowed_NAs_per_protein: float = 0.3
     log_func_name: Optional[Literal["log", "log2", "log10"]] = "log"
+    # Whether to apply DESeq2 size-factor normalization before log transformation.
+    # Set to False for relative abundance scores such as DIA MaxLFQ.
+    normalize: bool = True
     
     # Computed fields (set in __post_init__)
     log_func: Optional[Callable] = field(init=False, repr=False, default=None)
