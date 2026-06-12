@@ -120,7 +120,7 @@ def find_latent_dim(dataset: ProtriderDataset, method='OHT',
         
         k_max = injected_dataset.X.shape[1]
 
-        L, M, R = max(1, q // factor), q, int(q * 3)
+        L, M, R = max(1, q // factor), q, k_max
         fL, fM, fR = train_and_eval_q(L), train_and_eval_q(M), train_and_eval_q(R)
         
         enc2auprc[L] = fL
