@@ -3,13 +3,13 @@ import pandas as pd
 import scipy
 import tqdm
 import torch
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, effective_n_jobs
 import logging
 from statsmodels.stats.multitest import multipletests
 from collections import defaultdict
 
 
-__all__ = ["fit_residuals", "get_pvals", "adjust_pvals"]
+__all__ = ["fit_residuals", "get_pvals", "adjust_pvals", "get_pvals_per_gene"]
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def fit_residuals(dataset, df_out, model, config):
     elif config.analysis == "fraser": 
         sigma = None
         df0 = None
-        df_res = None
+        df_res = dataset.N.T
         mu, rho = model.get_dispersion_parameters()
         if mu is None:
             # Fitting BB for fraser if it is not set yet
@@ -55,7 +55,6 @@ def fit_residuals(dataset, df_out, model, config):
                                 torch.tensor(df_out.values, dtype=torch.float64)) 
             mu, rho = model.get_dispersion_parameters()
         sigma = rho
-        df_res = dataset.N.T
 
     return mu, sigma, df0, df_res
 
@@ -86,67 +85,83 @@ def perform_fdr_correction(pvals, method='bh', axis = 1):
     pvals_adj[mask] = np.nan
     return pvals_adj
 
-def get_pvals_per_gene(pvals, group_ids):
-    gene_to_row_indices = defaultdict(list)
-    for row_i, entry in enumerate(group_ids):
-        if pd.isna(entry):
-            continue
-        for gene in str(entry).split(';'):
-            gene = gene.strip()
-            if gene:
-                gene_to_row_indices[gene].append(row_i)
+def explode_junctions(pvals, group_ids):
+    origin_idx, rows, groups = [], [], []
+    for i, gid in enumerate(group_ids):
+        for gene in (gid.split(';') if isinstance(gid, str) and ';' in gid else [gid]):
+            origin_idx.append(i)  
+            rows.append(pvals.iloc[i])
+            groups.append(gene)
+    expanded = pd.DataFrame(rows, columns=pvals.columns).reset_index(drop=True)
+    return expanded, np.array(origin_idx), groups
 
-    records = []
-    for gene, row_indices in gene_to_row_indices.items():
-        gene_pvals = pvals.iloc[row_indices]  # (n_junctions, n_samples)
-        # per sample, find the junction with the minimum p-value
-        min_junctions = gene_pvals.idxmin(axis=0)  # Series: sample -> junction with min p
-        for sample, junction in min_junctions.items():
-            records.append({'gene': gene, 'junction': junction, 'sample': sample,
-                            'pvalue': gene_pvals.loc[junction, sample]})
+# def collapse_junctions(pvals, expanded_pvals_adj, origin_idx):
+#     # collapse to one junction
+#     pvals_adj = pd.DataFrame(index=pvals.index, columns=pvals.columns, dtype=float)
+#     for i in range(len(pvals)):
+#         pvals_adj.iloc[i] = expanded_pvals_adj.iloc[origin_idx == i].min(axis=0)
+#     return pvals_adj
 
-    return pd.DataFrame(records)
-
-
-
-def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs = -1, aggregate=False): #TODO: add subset FDR  correction
+def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs=-1, aggregate=False):
     if method == 'holm':
-        pvals_adj = pvals.copy().astype(float)
-        if group_ids is None:
-            raise ValueError("group_ids must be provided for Holm's correction on junction level.")
-        
-        if not aggregate:
-            # Step 1: Holm FWER
-            group_ids_arr = np.asarray(group_ids, dtype=object)
+        if aggregate:
+            if group_ids is None:
+                raise ValueError("group_ids must be provided for Holm's correction on junction level.")
+
+            expanded_pvals, origin_idx, groups = explode_junctions(pvals, group_ids)
+            input_was_numpy = isinstance(expanded_pvals, np.ndarray)
+            if input_was_numpy:
+                expanded_pvals = pd.DataFrame(expanded_pvals.T)
+            expanded_pvals_adj = expanded_pvals.copy().astype(float)
+
+            group_ids_arr = np.asarray(groups, dtype=object)
             unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
 
-            # function for parallelization
             def process_sample(sample):
-                col = pvals[sample].to_numpy(dtype=float)
+                col = expanded_pvals[sample].to_numpy(dtype=float)
                 result = col.copy()
+                kept_local_pos = {}  # group -> position (in expanded_pvals) of the junction kept for this sample
                 for group in unique_groups:
                     group_mask = group_ids_arr == group
                     group_pvals = col[group_mask]
                     valid = ~np.isnan(group_pvals)
                     if valid.sum() > 0:
                         adj = multipletests(group_pvals[valid], method='holm')[1]
-                        result[group_mask] = np.min(adj)
-                return sample, result
-            
-            for sample, result in Parallel(n_jobs=n_jobs)(delayed(process_sample)(s) for s in pvals.columns):
-                pvals_adj[sample] = result
+                        tmp = result[group_mask]
+                        tmp[valid] = adj
+                        result[group_mask] = tmp
+                        group_positions = np.where(group_mask)[0]
+                        valid_positions = group_positions[valid]
+                        kept_local_pos[group] = valid_positions[np.argmin(group_pvals[valid])]
+                return sample, result, kept_local_pos
 
-        #Step 2: Benjamini-Yekutieli
+            origin_junctions = pvals.index.to_numpy()[origin_idx]
+            kept_junctions = pd.DataFrame(index=unique_groups, columns=list(expanded_pvals.columns), dtype=object)
+            logger.info(f"Running Holm correction with {effective_n_jobs(n_jobs)} jobs across {len(expanded_pvals.columns)} samples.")
+            for sample, result, kept_local_pos in Parallel(n_jobs=n_jobs)(delayed(process_sample)(s) for s in expanded_pvals.columns):
+                expanded_pvals_adj[sample] = result
+                for group, local_pos in kept_local_pos.items():
+                    kept_junctions.loc[group, sample] = origin_junctions[local_pos]
+
+            expanded_pvals_adj['hgncSymbol'] = group_ids_arr
+            gene_pvals = expanded_pvals_adj.groupby('hgncSymbol').min()   # per-sample min
+            gene_pvals = gene_pvals.loc[unique_groups]
+            pvals_for_by = gene_pvals
+            # save the junction chosen per gene and sample
+            #pvals_for_by.attrs['kept_junctions'] = kept_junctions
         else:
-            # across junctions/genes (rows)
-            pvals_adj = perform_fdr_correction(pvals_adj, method='by', axis = 0)
-            print("Adjusted p-values (BY) computed across unique sites.")
-    else:
-        pvals_adj = perform_fdr_correction(pvals, method=method, axis = 1)
+            # Skip Holm — matches R behaviour for jaccard (each junction is its own group)
+            pvals_for_by = pvals.copy().astype(float) if isinstance(pvals, pd.DataFrame) else pd.DataFrame(pvals, dtype=float)
 
-    if isinstance(pvals, pd.DataFrame):
-        return pd.DataFrame(pvals_adj, index=pvals.index, columns=pvals.columns)
-    return pvals_adj
+        pvals_adj = perform_fdr_correction(pvals_for_by, method='by', axis=0)
+        pvals_adj = pd.DataFrame(pvals_adj,index=pvals_for_by.index, columns=pvals_for_by.columns)
+        logger.info("Adjusted p-values (BY) computed across unique sites.")
+        return pvals_adj, ({'pvals_for_by': gene_pvals, 'kept_junctions': kept_junctions} if aggregate else None)   # pvals_for_by = pValueGene, pvals_adj = padjustGene
+
+    else:
+        pvals_adj = perform_fdr_correction(pvals, method=method, axis=1)
+    return pvals_adj, None
+
 
 def _get_pv_norm(res, mu, sigma, how='two-sided'):
     mask = ~np.isfinite(res)
@@ -249,7 +264,7 @@ def get_pv_bb(K, N, mu, rho, how='two-sided'):
         rho:    dispersion parameter, shape (junctions,)
         how:    'two-sided', 'left', or 'right'
     Returns:
-        pvals, z: p-values and z-scores (samples, junctions)
+        pvals: p-values (samples, junctions)
     """
     if how not in ('two-sided', 'left', 'right'):
         raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
@@ -269,9 +284,9 @@ def get_pv_bb(K, N, mu, rho, how='two-sided'):
     alpha = mu_arr * conc                        # (samples, junctions)
     beta  = (1.0 - mu_arr) * conc               # (samples, junctions)
 
-    # z-score
-    var_bb = N * mu_arr * (1.0 - mu_arr) * (1.0 + (N - 1.0) * rho_arr)
-    z = (K - N * mu_arr) / np.sqrt(np.maximum(var_bb, 1e-10))
+    # # z-score
+    # var_bb = N * mu_arr * (1.0 - mu_arr) * (1.0 + (N - 1.0) * rho_arr)
+    # z = (K - N * mu_arr) / np.sqrt(np.maximum(var_bb, 1e-10))
 
     # betabinom requires integer n, k
     N_int = np.round(N).astype(int)
@@ -288,7 +303,7 @@ def get_pv_bb(K, N, mu, rho, how='two-sided'):
     else:  # two-sided
         pvals = 2.0 * np.minimum(np.minimum(pless, 1.0 - pless + dval), 0.5)
 
-    return pvals, z
+    return pvals, None
 
 
 def _get_pv_t_base(x, mu, sigma, df, how='two-sided'):

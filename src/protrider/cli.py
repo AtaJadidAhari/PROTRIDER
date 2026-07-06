@@ -212,19 +212,22 @@ def run(config_path: str):
     if out_dir is None:
         click.echo('Output directory has not been specified in the config. Exiting.')
         return
-    
-    if config.verbose:
-        logging.basicConfig(
-            level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
-    else:
-        logging.basicConfig(
-            level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', )
-
-    logger.info('Starting protrider')
-    logger.info("Config:\n%s", yaml.dump(config.as_dict(), default_flow_style=False))
 
     path = Path(config.out_dir)
     path.mkdir(parents=True, exist_ok=True)
+
+    log_level = logging.DEBUG if config.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(path / 'protrider.log'),
+        ],
+    )
+
+    logger.info('Starting protrider')
+    logger.info("Config:\n%s", yaml.dump(config.as_dict(), default_flow_style=False))
 
     # Log function and base function are now computed in config.__post_init__
     if config.log_func is None:
@@ -250,7 +253,7 @@ def run(config_path: str):
     # Save wide format (individual CSV files)
     result.save(config.out_dir, format="wide", analysis=config.analysis)
     # Save long format summary
-    result.save(config.out_dir, format="long", include_all=config.report_all, analysis=config.analysis)
+    result.save(config.out_dir, format="long", include_all=config.report_all, analysis=config.analysis, aggregate=config.aggregate)
     # Save model information
     model_info.save(config.out_dir)
     # Save config

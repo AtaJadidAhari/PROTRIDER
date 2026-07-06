@@ -437,41 +437,68 @@ class OmicDataset(Dataset):
     def __getitem__(self, idx):
         pass
 
-class FraserDataset(Dataset, PCADataset): # inherit omic?
-    def __init__(self, split_reads: str, unsplit_reads: str, sa_file: Optional[str] = None,
-                 cov_used: Optional[list] = None, gtf: Optional[str] = None, **kwargs):
+class FraserDataset(Dataset, PCADataset): 
+    def __init__(self, split_reads: str, unsplit_reads: str,
+                minExpressionInOneSample , quantile, quantileMinExpression, 
+                pseudocount, min_delta_psi=0.05, sa_file: Optional[str] = None,
+                 cov_used: Optional[list] = None, gtf: Optional[str] = None,
+                 **kwargs):
         # read split and unsplit reads
-        print("Reading split and unsplit reads")
-        self.split_reads = read(input_intensities=split_reads, input_format = 'introns_as_rows') # ASK: index col??
-        self.unsplit_reads = read(input_intensities=unsplit_reads, input_format = 'introns_as_rows')  # ASK: index col??
-        self.samples_cols = self.split_reads.columns.intersection(self.unsplit_reads.columns) 
-        
+        logger.info("Reading split and unsplit reads")
+        self.split_reads = read(input_intensities=split_reads, input_format = 'introns_as_rows') # TODO: index col??
+        self.unsplit_reads = read(input_intensities=unsplit_reads, input_format = 'introns_as_rows')  # TODO: index col??
+        self.unsplit_reads.columns = self.unsplit_reads.columns.str.lstrip("X") # ONLY for batch file
+        self.sample_ids = self.split_reads.columns.intersection(self.unsplit_reads.columns) 
+        logger.info(f"Number of samples in the dataset: {len(self.sample_ids)}")
 
-        print("Calculating K and N")
+        logger.info("Calculating K and N")
         start = time.time()
         # calculate K and N
         self.K = self.calculate_K()
         self.N = self.calculate_N() 
     
         duration = time.time() - start
-        print(f"K and N calculated in {duration:.2f} seconds.")
+        logger.info(f"K and N calculated in {duration:.2f} seconds.")
 
         # calculate Jaccard index
-        print("Calculating Jaccard index")
+        logger.info("Calculating Jaccard index")
         start = time.time()
 
         # create X and center it
-        self.data = self.create_data()
+        self.data = self.create_data(pseudocount=pseudocount)
 
         self.jaccard_index = self.K / self.N
 
         # Jaccard filter expression
-        self.filter_expression_jaccard()
-        #self.jaccard_index = self.jaccard_index.loc[self.passed_expression, :]
+        self.filter_expression_jaccard(minExpressionInOneSample , quantile, quantileMinExpression)
+
+        # Apply the filter
+        self.K = self.K[self.passed_expression]
+        self.N = self.N[self.passed_expression]
+        self.nonsplitCounts = self.nonsplitCounts[self.passed_expression]
+        self.jaccard_index = self.jaccard_index[self.passed_expression]
+        self.split_reads = self.split_reads[self.passed_expression]
+        self.data = self.data.loc[:, self.passed_expression]
+
+        # Jaccard filter variability (must run on the already expression-filtered set)
+        self.filter_variability_jaccard(min_delta_psi)
+
+        # Apply the variability filter
+        self.K = self.K[self.passed_variability]
+        self.N = self.N[self.passed_variability]
+        self.nonsplitCounts = self.nonsplitCounts[self.passed_variability]
+        self.jaccard_index = self.jaccard_index[self.passed_variability]
+        self.split_reads = self.split_reads[self.passed_variability]
+        self.data = self.data.loc[:, self.passed_variability]
+
+
         duration = time.time() - start
-        print(f"Jaccard index calculated and filtered in {duration:.2f} seconds.")
-    
-        self.data =  pd.DataFrame(self.data, index=self.samples_cols, columns=self.split_reads.index)
+        logger.info(f"Jaccard index calculated and filtered in {duration:.2f} seconds.")
+        logger.info(f"Junctions passing expression filter: {self.passed_expression.sum()} / {len(self.passed_expression)}")
+        logger.info(f"Junctions passing variability filter: {self.passed_variability.sum()} / {len(self.passed_variability)}")
+
+
+        self.data = pd.DataFrame(self.data, index=self.sample_ids, columns=self.split_reads.index)
         
         self.X = torch.tensor(self.data.to_numpy(), dtype=torch.float64) - torch.nanmean(torch.tensor(self.data.to_numpy(), dtype=torch.float64), dim=0, keepdim=True)
 
@@ -497,7 +524,7 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         # Annotate junctions with gene symbols if a GTF file is provided
         if gtf is not None:
             try:
-                print("Annotating junctions with GTF")
+                logger.info("Annotating junctions with GTF.")
                 self.annotate_junctions(gtf)
             except Exception as e:
                 logger.warning(f"Junction annotation failed: {e}. Proceeding without annotation.")
@@ -522,22 +549,21 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
     def __getitem__(self, idx):
         return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, self.raw_x[idx])
 
-    
     def calculate_K(self):
-        return self.split_reads[self.samples_cols]
+        return self.split_reads[self.sample_ids]
     
     def calculate_N(self):
         junc_idx = self.split_reads.index
 
         # Vectorized lookup: group unsplit reads by spliceSiteID, sum counts per site
-        nsr = self.unsplit_reads.groupby("spliceSiteID")[self.samples_cols].sum()
+        nsr = self.unsplit_reads.groupby("spliceSiteID")[self.sample_ids].sum()
         nsr_donor   = nsr.reindex(self.split_reads["startID"].values).fillna(0).astype(int).set_axis(junc_idx)
         nsr_acceptor = nsr.reindex(self.split_reads["endID"].values).fillna(0).astype(int).set_axis(junc_idx)
         self.nonsplitCounts = nsr_donor + nsr_acceptor  # junctions × samples
 
         # Vectorized lookup: group split reads by startID and endID, sum counts per site
-        split_by_start = self.split_reads.groupby("startID")[self.samples_cols].sum()
-        split_by_end   = self.split_reads.groupby("endID")[self.samples_cols].sum()
+        split_by_start = self.split_reads.groupby("startID")[self.sample_ids].sum()
+        split_by_end   = self.split_reads.groupby("endID")[self.sample_ids].sum()
         alt_donor   = split_by_start.reindex(self.split_reads["startID"].values).fillna(0).astype(int).set_axis(junc_idx)
         alt_acceptor = split_by_end.reindex(self.split_reads["endID"].values).fillna(0).astype(int).set_axis(junc_idx)
 
@@ -560,37 +586,20 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
         )
         self.passed_expression = passed_expression
     
+    def filter_variability_jaccard(self, min_delta_psi=0.05):
+        jaccard = np.asarray(self.jaccard_index)
+        row_mean = np.nanmean(jaccard, axis=1, keepdims=True)
+        max_d_jaccard = np.nanmax(np.abs(jaccard - row_mean), axis=1)
+
+        self.passed_variability = max_d_jaccard >= min_delta_psi
+
+
     def create_data(self, pseudocount= 0.1):
         X = (self.K + pseudocount) / (self.N + 2 * pseudocount)
         X_logit = np.log(X / (1 - X))
         X_logit = X_logit.T
         return X_logit
         
-
-    def get_site_index(self, psi_type: str = "jaccard") -> np.ndarray:
-        """
-        Returns a 1D array of splice site IDs (one per junction), matching R's getSiteIndex.
-        Junctions sharing the same site ID are grouped for Holm FWER correction.
-
-        psi_type:
-            "jaccard" — each junction is its own group (no grouping, Holm is a no-op)
-            "psi5"    — group by donor site: startID on + strand, endID on - strand
-            "psi3"    — group by acceptor site: endID on + strand, startID on - strand
-        """
-        if psi_type == "jaccard":
-            return np.arange(len(self.intron_ranges))
-
-        start_id = self.intron_ranges["StartId"].to_numpy()
-        end_id   = self.intron_ranges["EndId"].to_numpy()
-        strand   = self.intron_ranges["Strand"].fillna("+").replace({"*": "+"}).to_numpy()
-
-        if psi_type == "psi5":
-            return np.where(strand == "+", start_id, end_id)
-        elif psi_type == "psi3":
-            return np.where(strand == "+", end_id, start_id)
-        else:
-            raise ValueError(f"Unknown psi_type '{psi_type}'. Choose from 'jaccard', 'psi5', 'psi3'.")
-
     def annotate_junctions(self, gtf_file: str, feature_name: str = "hgnc_symbol"):
         """Annotate junctions with gene symbols and reference overlap status.
 
@@ -670,11 +679,11 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
 
         # Then sort by medianCount first, fds_order second
         ov_df = ov_df.sort_values(["medianCount", "fds_order"],ascending=[False, True])   # highest count first, lowest FDS index first for ties
-        print("Before choosing in ov_df: ")
-        print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
+        #print("Before choosing in ov_df: ")
+        #print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
         ov_df = ov_df.drop_duplicates(subset="junction_idx", keep="first")
-        print("After choosing in ov_df: ")
-        print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
+        #print("After choosing in ov_df: ")
+        #print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
         #ov_df = ov_df.sort_values("medianCount", ascending=False)
         #ov_df = ov_df.drop_duplicates(subset="junction_idx", keep="first")
 
@@ -696,7 +705,7 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
 
         def broadcast(series: pd.Series) -> pd.DataFrame:
             """Repeat a per-junction scalar across all sample columns."""
-            return pd.DataFrame({col: series for col in self.samples_cols}, index=self.N.index)
+            return pd.DataFrame({col: series for col in self.sample_ids}, index=self.N.index)
 
         return {
             'counts':                        self.K.T,
@@ -710,18 +719,5 @@ class FraserDataset(Dataset, PCADataset): # inherit omic?
                           index=self.N.index)
             ).T,
         }
-
-    def get_delta_psi(self):
-        """
-        Compute delta psi = jaccard index - median of the jaccard index across samples for each junction
-        jaccard_index has the shape junctions x samples
-
-        -------
-        delta_psi : DataFrame [samples x junctions]
-        """
-        row_median = self.jaccard_index.median(axis=1, skipna=True) 
-        self.row_median = row_median
-        delta_psi = self.jaccard_index.subtract(row_median, axis=0)
-        return pd.DataFrame(np.round(delta_psi.T, decimals=2))
 
 

@@ -1,5 +1,8 @@
 import abc
 from typing import Optional
+import numpy as np
+import scipy.stats
+from scipy.optimize import minimize_scalar
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -115,45 +118,32 @@ class FraserDispersion():
     def clip_mu(self, lower=0.01, upper=0.99): #ASK
         self.mu = torch.clip(self.mu, lower, upper)
 
-    def fit(self, K, N, x_pred, max_iter=100, device=None):
-        """
-        Fit rho (dispersion) for Beta-Binomial.
-        """
 
-        mu = torch.sigmoid(x_pred).T # Shape should be junction * samples
-        # Initialize rho
+    def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100):
+        mu = torch.sigmoid(x_pred).T          # (junctions, samples)
         _, rho_init = self.distribution.init_fit(K, N)
 
-        # Optimize in logit space 
-        p_rho = nn.Parameter(torch.logit(rho_init))
+        K_np   = K.numpy()#;  N_np = N.numpy()
+        #mu_np  = mu.detach().numpy()           # (junctions, samples)
+        logit_min = np.log(rho_min / (1 - rho_min))
+        logit_max = np.log(rho_max / (1 - rho_max))
 
-        optimizer = optim.LBFGS(
-            [p_rho],
-            max_iter=max_iter,
-            history_size=5,
-            tolerance_change=1e-9,
-            line_search_fn="strong_wolfe",
-        )
+        def nll(logit_rho, k, n, m):
+            rho = torch.tensor([[1.0 / (1.0 + np.exp(-logit_rho))]], dtype=torch.float64)
+            return self.distribution.loss(k, n, m, rho).item() + lambda_penalty * logit_rho ** 2
 
-        def closure():
-            optimizer.zero_grad()
+        rho_final = np.empty(K_np.shape[0])
+        for j in range(K_np.shape[0]):
+            k_j = K[j].unsqueeze(0)    # (1, samples)
+            n_j = N[j].unsqueeze(0)    # (1, samples)
+            mu_j = mu[j].unsqueeze(0)  # (1, samples)
 
-            rho = torch.sigmoid(p_rho)  # ensure 0 < rho < 1
-            rho_expanded = rho.unsqueeze(1)
+            res = minimize_scalar(lambda lr: nll(lr, k_j, n_j, mu_j), bounds=(logit_min, logit_max), method='bounded', options={'maxiter': max_iter, 'xatol': 1e-9})
+            rho_j = 1.0 / (1.0 + np.exp(-res.x))
+            rho_final[j] = rho_j if np.isfinite(rho_j) else rho_init[j].item()
 
-            loss = self.distribution.loss(K, N, mu, rho_expanded)
-            #loss = self.distribution.loss_penalized(K, N, mu, rho_expanded)
-            loss.backward()
-
-            return loss
-
-        optimizer.step(closure)
-        # Final rho
-        rho_final = torch.sigmoid(p_rho).detach()
-
-        self.rho = rho_final
-        self.mu = mu  # TODO
-
+        self.rho = torch.tensor(rho_final, dtype=torch.float64)
+        self.mu  = mu
         
 
 class Distribution(): # Do we need this base class?

@@ -30,7 +30,7 @@
 #                         )
 #     assert isinstance(q, int), "q should be an integer"
 #     assert q > 1, "q should be greater than 1"
-#     assert q <= len(fraser_dataset.samples_cols), "q should be less than or equal to the number of samples"
+#     assert q <= len(fraser_dataset.sample_ids), "q should be less than or equal to the number of samples"
 #     assert q <= fraser_dataset.X.shape[1], "q should be less than or equal to the number of junctions"
 
 # def test_model_architecture(fraser_dataset, config_path, q):
@@ -39,7 +39,7 @@
 # def test_model_output(fraser_dataset, config_path, q):
 #     config = load_config(config_path)
 
-#     n_samples  = len(fraser_dataset.samples_cols)
+#     n_samples  = len(fraser_dataset.sample_ids)
 #     n_junctions = fraser_dataset.split_reads.shape[0]
 
 #     model = init_model(fraser_dataset, q,
@@ -71,7 +71,7 @@
 # def test_fit_residuals(fraser_dataset, config_path, df_out, model):
 #     config = load_config(config_path)
 #     n_junctions = fraser_dataset.split_reads.shape[0]
-#     n_samples   = len(fraser_dataset.samples_cols)
+#     n_samples   = len(fraser_dataset.sample_ids)
 #     mu, rho, _, _ = fit_residuals(fraser_dataset, df_out, model, config)
 
 #     assert mu is not None, "mu should not be None"

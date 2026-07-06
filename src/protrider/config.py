@@ -37,6 +37,8 @@ class ProtriderConfig:
     min_expression_in_one_sample: int = 20
     quantile_min_expression: int = 10
     quantile_for_filtering: float = 0.95
+    min_delta_psi: float = 0.05  # for fraser jaccard variability filter
+
 
     # OUTRIDER params
     fpkmCutoff: Optional[int] =  1
@@ -94,6 +96,7 @@ class ProtriderConfig:
     # Reporting params
     outlier_threshold: float = 0.1
     report_all: bool = True
+    aggregate: bool = False
     
     # Runtime params
     verbose: bool = False
