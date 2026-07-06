@@ -16,10 +16,10 @@ from ..dispersions import Dispersion, NegativeBinomialDistribution
 from protrider.datasets import ProtriderSubset
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.DEBUG,  # show DEBUG and above
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+#logging.basicConfig(
+#    level=logging.DEBUG,  # show DEBUG and above
+#    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+#)
 
 @dataclass
 class ModelInfo:
