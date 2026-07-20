@@ -32,9 +32,11 @@ class Result:
     n_out_median: int
     n_out_max: int
     n_out_total: int
+    latent_values: pd.DataFrame
     pval_dist: str = 'gaussian'  # Distribution used for p-value computation
     outlier_threshold: float = 0.1  # Threshold for determining outliers
     dispersions: pd.DataFrame = None # Dispersions for OUTRIDER or FRASER
+    mu: pd.DataFrame = None # OUTRIDER mu
     
     def save(self, out_dir: str, format: Literal["wide", "long"] = "wide", 
             include_all: bool = False, analysis: str = "protrider") -> Optional[pd.DataFrame]:
@@ -107,6 +109,11 @@ class Result:
             out_p = f'{out_dir}/fc.csv'
             self.fc.T.to_csv(out_p, header=True, index=True)
             logger.info(f"Saved fc scores to {out_p}")
+
+            # latent vector
+            out_p = f'{out_dir}/latent_values.csv'
+            self.latent_values.to_csv(out_p, header=True, index=True)
+            logger.info(f"Saved latent values to {out_p}")
             
             # AE raw, filtered input
             if analysis == 'outrider':
@@ -125,6 +132,11 @@ class Result:
                 out_p = f'{out_dir}/theta.csv'
                 self.dispersions.to_csv(out_p, header=True, index=True)
                 logger.info(f"Saved thetas to to {out_p}")
+
+                # mu
+                out_p = f'{out_dir}/mu.csv'
+                self.mu.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved mus to to {out_p}")
 
             return None
             
@@ -515,8 +527,8 @@ def _run_protrider_standard(
         if mu is None:
             # Fitting NB for outrider if it is not set yet
             model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
-            mu, theta = model.get_dispersion_parameters()
-
+    mu, theta = model.get_dispersion_parameters()
+    latent_values = model.get_latent_values()
     pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
                          res=df_res.values,
                          mu=mu,
@@ -540,7 +552,8 @@ def _run_protrider_standard(
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
                              pvals=pvals, Z=Z, pvals_one_sided=pvals_one_sided, pvals_adj=pvals_adj,
                              pseudocount=config.pseudocount, outlier_threshold=config.outlier_threshold,
-                             base_fn=config.base_fn, pval_dist=config.pval_dist, dispersions=theta)
+                             base_fn=config.base_fn, pval_dist=config.pval_dist, latent_values=latent_values,
+                             dispersions=theta, mu=mu)
     model_info = ModelInfo(q=np.array(q), learning_rate=np.array(config.lr),
                            n_epochs=np.array(config.n_epochs), test_loss=np.array(final_loss),
                            train_losses=np.array(train_losses), df_folds=None)
@@ -808,7 +821,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: Protrid
     return df_out, theta, df_presence, loss, reconstruction_loss, bce_loss
 
 
-def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn, pval_dist, dispersions):
+def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset, pseudocount, outlier_threshold, base_fn, pval_dist, latent_values, dispersions, mu):
     # Store as df
     df_pvals_adj = pd.DataFrame(pvals_adj)
     df_pvals_adj.columns = dataset.data.columns
@@ -842,6 +855,15 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
         dispersions = pd.DataFrame(dispersions)
         dispersions.columns = ["theta"]
         dispersions.index = dataset.data.columns
+    if mu is not None:
+        mu = pd.DataFrame(mu)
+        mu.columns = ["mu"]
+        mu.index = dataset.data.columns
+
+    df_latent_values = pd.DataFrame(latent_values)
+    df_latent_values.index = dataset.data.index
+    df_latent_values = df_latent_values.T
+    df_latent_values.index.name = "enc_dim"
 
     logger.info(
         f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}')
@@ -851,4 +873,4 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
 
     return Result(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence, df_pvals=df_pvals, df_Z=df_Z,
                   df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc, n_out_median=n_out_median, n_out_max=n_out_max,
-                  n_out_total=n_out_total, pval_dist=pval_dist, outlier_threshold=outlier_threshold, dispersions=dispersions)
+                  n_out_total=n_out_total, pval_dist=pval_dist, outlier_threshold=outlier_threshold, latent_values=df_latent_values, dispersions=dispersions, mu=mu)
