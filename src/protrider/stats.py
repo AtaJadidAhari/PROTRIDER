@@ -85,78 +85,117 @@ def perform_fdr_correction(pvals, method='bh', axis = 1):
     pvals_adj[mask] = np.nan
     return pvals_adj
 
+# def explode_junctions(pvals, group_ids):
+#     origin_idx, rows, groups = [], [], []
+#     for i, gid in enumerate(group_ids):
+#         for gene in (gid.split(';') if isinstance(gid, str) and ';' in gid else [gid]):
+#             origin_idx.append(i)  
+#             rows.append(pvals.iloc[i])
+#             groups.append(gene)
+#     expanded = pd.DataFrame(rows, columns=pvals.columns).reset_index(drop=True)
+#     return expanded, np.array(origin_idx), groups
+
 def explode_junctions(pvals, group_ids):
-    origin_idx, rows, groups = [], [], []
-    for i, gid in enumerate(group_ids):
-        for gene in (gid.split(';') if isinstance(gid, str) and ';' in gid else [gid]):
-            origin_idx.append(i)  
-            rows.append(pvals.iloc[i])
-            groups.append(gene)
-    expanded = pd.DataFrame(rows, columns=pvals.columns).reset_index(drop=True)
-    return expanded, np.array(origin_idx), groups
+    gene_lists = group_ids.apply(lambda g: g.split(';') if isinstance(g, str) and ';' in g else [g])
+    exploded_groups = gene_lists.explode()
+    origin_idx = pvals.index.get_indexer(exploded_groups.index)
+    expanded = pvals.iloc[origin_idx].reset_index(drop=True)
+    return expanded, origin_idx, exploded_groups.to_numpy()
 
-# def collapse_junctions(pvals, expanded_pvals_adj, origin_idx):
-#     # collapse to one junction
-#     pvals_adj = pd.DataFrame(index=pvals.index, columns=pvals.columns, dtype=float)
-#     for i in range(len(pvals)):
-#         pvals_adj.iloc[i] = expanded_pvals_adj.iloc[origin_idx == i].min(axis=0)
-#     return pvals_adj
 
-def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs=-1, aggregate=False):
+# def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs=-1, aggregate=False):
+#     if method == 'holm':
+#         if aggregate:
+#             if group_ids is None:
+#                 raise ValueError("group_ids must be provided for Holm's correction on junction level.")
+#             junction_pvals_adj, _ = adjust_pvals(pvals, method='holm', group_ids=None, n_jobs=n_jobs, aggregate=False)
+#             expanded_pvals, origin_idx, groups = explode_junctions(pvals, group_ids)
+#             input_was_numpy = isinstance(expanded_pvals, np.ndarray)
+#             if input_was_numpy:
+#                 expanded_pvals = pd.DataFrame(expanded_pvals.T)
+#             expanded_pvals_adj = expanded_pvals.copy().astype(float)
+
+#             group_ids_arr = np.asarray(groups, dtype=object)
+#             unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
+
+#             def process_sample(sample):
+#                 col = expanded_pvals[sample].to_numpy(dtype=float)
+#                 result = col.copy()
+#                 kept_local_pos = {}  # group -> position (in expanded_pvals) of the junction kept for this sample
+#                 for group in unique_groups:
+#                     group_mask = group_ids_arr == group
+#                     group_pvals = col[group_mask]
+#                     valid = ~np.isnan(group_pvals)
+#                     if valid.sum() > 0:
+#                         adj = multipletests(group_pvals[valid], method='holm')[1]
+#                         tmp = result[group_mask]
+#                         tmp[valid] = adj
+#                         result[group_mask] = tmp
+#                         group_positions = np.where(group_mask)[0]
+#                         valid_positions = group_positions[valid]
+#                         kept_local_pos[group] = valid_positions[np.argmin(group_pvals[valid])]
+#                 return sample, result, kept_local_pos
+
+#             origin_junctions = pvals.index.to_numpy()[origin_idx]
+#             kept_junctions = pd.DataFrame(index=unique_groups, columns=list(expanded_pvals.columns), dtype=object)
+#             logger.info(f"Running Holm correction with {effective_n_jobs(n_jobs)} jobs across {len(expanded_pvals.columns)} samples.")
+#             for sample, result, kept_local_pos in Parallel(n_jobs=n_jobs)(delayed(process_sample)(s) for s in expanded_pvals.columns):
+#                 expanded_pvals_adj[sample] = result
+#                 for group, local_pos in kept_local_pos.items():
+#                     kept_junctions.loc[group, sample] = origin_junctions[local_pos]
+
+#             expanded_pvals_adj['hgncSymbol'] = group_ids_arr
+#             gene_pvals = expanded_pvals_adj.groupby('hgncSymbol').min()   # per-sample min
+#             gene_pvals = gene_pvals.loc[unique_groups]
+#             pvals_for_by = gene_pvals
+#         else:
+#             # Skip Holm — matches R behaviour for jaccard (each junction is its own group)
+#             pvals_for_by = pvals.copy().astype(float) if isinstance(pvals, pd.DataFrame) else pd.DataFrame(pvals, dtype=float)
+
+#         pvals_adj = perform_fdr_correction(pvals_for_by, method='by', axis=0)
+#         pvals_adj = pd.DataFrame(pvals_adj,index=pvals_for_by.index, columns=pvals_for_by.columns)
+#         logger.info("Adjusted p-values (BY) computed across unique sites.")
+#         return pvals_adj, ({'pvals_for_by': gene_pvals, 'kept_junctions': kept_junctions, 'junction_pvals_adj': junction_pvals_adj} if aggregate else None)   # pvals_for_by = pValueGene, pvals_adj = padjustGene
+
+#     else:
+#         pvals_adj = perform_fdr_correction(pvals, method=method, axis=1)
+#     return pvals_adj, None
+
+def adjust_pvals(pvals, method='bh', group_ids=None,  aggregate=False, n_jobs=-1):
     if method == 'holm':
         if aggregate:
             if group_ids is None:
                 raise ValueError("group_ids must be provided for Holm's correction on junction level.")
+            junction_pvals_adj, _ = adjust_pvals(pvals, method='holm', group_ids=None, aggregate=False)
 
-            expanded_pvals, origin_idx, groups = explode_junctions(pvals, group_ids)
-            input_was_numpy = isinstance(expanded_pvals, np.ndarray)
-            if input_was_numpy:
-                expanded_pvals = pd.DataFrame(expanded_pvals.T)
-            expanded_pvals_adj = expanded_pvals.copy().astype(float)
-
-            group_ids_arr = np.asarray(groups, dtype=object)
-            unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
-
-            def process_sample(sample):
-                col = expanded_pvals[sample].to_numpy(dtype=float)
-                result = col.copy()
-                kept_local_pos = {}  # group -> position (in expanded_pvals) of the junction kept for this sample
-                for group in unique_groups:
-                    group_mask = group_ids_arr == group
-                    group_pvals = col[group_mask]
-                    valid = ~np.isnan(group_pvals)
-                    if valid.sum() > 0:
-                        adj = multipletests(group_pvals[valid], method='holm')[1]
-                        tmp = result[group_mask]
-                        tmp[valid] = adj
-                        result[group_mask] = tmp
-                        group_positions = np.where(group_mask)[0]
-                        valid_positions = group_positions[valid]
-                        kept_local_pos[group] = valid_positions[np.argmin(group_pvals[valid])]
-                return sample, result, kept_local_pos
-
+            expanded, origin_idx, groups = explode_junctions(pvals, group_ids)
             origin_junctions = pvals.index.to_numpy()[origin_idx]
-            kept_junctions = pd.DataFrame(index=unique_groups, columns=list(expanded_pvals.columns), dtype=object)
-            logger.info(f"Running Holm correction with {effective_n_jobs(n_jobs)} jobs across {len(expanded_pvals.columns)} samples.")
-            for sample, result, kept_local_pos in Parallel(n_jobs=n_jobs)(delayed(process_sample)(s) for s in expanded_pvals.columns):
-                expanded_pvals_adj[sample] = result
-                for group, local_pos in kept_local_pos.items():
-                    kept_junctions.loc[group, sample] = origin_junctions[local_pos]
+            valid_group = pd.notna(groups)
+            long = expanded.loc[valid_group].reset_index(drop=True).melt(var_name='sample', value_name='pval', ignore_index=True)
+            n_samples = len(expanded.columns)
+            long['gene'] = np.tile(groups[valid_group], n_samples)
+            long['junction'] = np.tile(origin_junctions[valid_group], n_samples)
+            long = long.dropna(subset=['pval'])
 
-            expanded_pvals_adj['hgncSymbol'] = group_ids_arr
-            gene_pvals = expanded_pvals_adj.groupby('hgncSymbol').min()   # per-sample min
-            gene_pvals = gene_pvals.loc[unique_groups]
+            g = long.groupby(['gene', 'sample'])['pval']
+            agg = g.agg(n='size', min_pval='min')
+            agg['gene_pval'] = (agg['n'] * agg['min_pval']).clip(upper=1.0)
+            agg['junction'] = long.loc[g.idxmin().to_numpy(), 'junction'].to_numpy()
+
+            unique_groups = np.unique(np.asarray(groups, dtype=object)[valid_group])
+            gene_pvals = agg['gene_pval'].unstack('sample').reindex(unique_groups)
+            kept_junctions = agg['junction'].unstack('sample').reindex(unique_groups)
+
             pvals_for_by = gene_pvals
-            # save the junction chosen per gene and sample
-            #pvals_for_by.attrs['kept_junctions'] = kept_junctions
+
         else:
             # Skip Holm — matches R behaviour for jaccard (each junction is its own group)
             pvals_for_by = pvals.copy().astype(float) if isinstance(pvals, pd.DataFrame) else pd.DataFrame(pvals, dtype=float)
 
         pvals_adj = perform_fdr_correction(pvals_for_by, method='by', axis=0)
-        pvals_adj = pd.DataFrame(pvals_adj,index=pvals_for_by.index, columns=pvals_for_by.columns)
+        pvals_adj = pd.DataFrame(pvals_adj, index=pvals_for_by.index, columns=pvals_for_by.columns)
         logger.info("Adjusted p-values (BY) computed across unique sites.")
-        return pvals_adj, ({'pvals_for_by': gene_pvals, 'kept_junctions': kept_junctions} if aggregate else None)   # pvals_for_by = pValueGene, pvals_adj = padjustGene
+        return pvals_adj, ({'pvals_for_by': gene_pvals, 'kept_junctions': kept_junctions, 'junction_pvals_adj': junction_pvals_adj} if aggregate else None)
 
     else:
         pvals_adj = perform_fdr_correction(pvals, method=method, axis=1)
@@ -283,10 +322,6 @@ def get_pv_bb(K, N, mu, rho, how='two-sided'):
     conc  = (1.0 - rho_arr) / rho_arr          # (junctions,)
     alpha = mu_arr * conc                        # (samples, junctions)
     beta  = (1.0 - mu_arr) * conc               # (samples, junctions)
-
-    # # z-score
-    # var_bb = N * mu_arr * (1.0 - mu_arr) * (1.0 + (N - 1.0) * rho_arr)
-    # z = (K - N * mu_arr) / np.sqrt(np.maximum(var_bb, 1e-10))
 
     # betabinom requires integer n, k
     N_int = np.round(N).astype(int)

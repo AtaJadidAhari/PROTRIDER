@@ -250,10 +250,11 @@ def run(config_path: str):
     result, model_info = run_pipeline(config)
 
     # Save results
-    # Save wide format (individual CSV files)
-    result.save(config.out_dir, format="wide", analysis=config.analysis)
+    if config.analysis != 'fraser':
+        # Save wide format (individual CSV files)
+        result.save(config.out_dir, format="wide", analysis=config.analysis)
     # Save long format summary
-    result.save(config.out_dir, format="long", include_all=config.report_all, analysis=config.analysis, aggregate=config.aggregate)
+    result.save(config.out_dir, format="long", include_all=config.report_all, analysis=config.analysis)
     # Save model information
     model_info.save(config.out_dir)
     # Save config

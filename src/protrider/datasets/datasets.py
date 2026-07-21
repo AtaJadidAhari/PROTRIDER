@@ -456,16 +456,14 @@ class FraserDataset(Dataset, PCADataset):
         # calculate K and N
         self.K = self.calculate_K()
         self.N = self.calculate_N() 
-    
+        del self.unsplit_reads
+
         duration = time.time() - start
         logger.info(f"K and N calculated in {duration:.2f} seconds.")
 
         # calculate Jaccard index
         logger.info("Calculating Jaccard index")
         start = time.time()
-
-        # create X and center it
-        self.data = self.create_data(pseudocount=pseudocount)
 
         self.jaccard_index = self.K / self.N
 
@@ -478,7 +476,6 @@ class FraserDataset(Dataset, PCADataset):
         self.nonsplitCounts = self.nonsplitCounts[self.passed_expression]
         self.jaccard_index = self.jaccard_index[self.passed_expression]
         self.split_reads = self.split_reads[self.passed_expression]
-        self.data = self.data.loc[:, self.passed_expression]
 
         # Jaccard filter variability (must run on the already expression-filtered set)
         self.filter_variability_jaccard(min_delta_psi)
@@ -489,8 +486,9 @@ class FraserDataset(Dataset, PCADataset):
         self.nonsplitCounts = self.nonsplitCounts[self.passed_variability]
         self.jaccard_index = self.jaccard_index[self.passed_variability]
         self.split_reads = self.split_reads[self.passed_variability]
-        self.data = self.data.loc[:, self.passed_variability]
 
+        # create X and center it
+        self.data = self.create_data(pseudocount=pseudocount)
 
         duration = time.time() - start
         logger.info(f"Jaccard index calculated and filtered in {duration:.2f} seconds.")
@@ -500,17 +498,19 @@ class FraserDataset(Dataset, PCADataset):
 
         self.data = pd.DataFrame(self.data, index=self.sample_ids, columns=self.split_reads.index)
         
-        self.X = torch.tensor(self.data.to_numpy(), dtype=torch.float64) - torch.nanmean(torch.tensor(self.data.to_numpy(), dtype=torch.float64), dim=0, keepdim=True)
+        X =  torch.tensor(self.data.to_numpy(), dtype=torch.float64)
+        self.X = X - torch.nanmean(X, dim=0, keepdim=True)
+        del X
 
         self.mask = ~np.isfinite(self.data)
         self.mask = np.array(self.mask.values)
         self.X = torch.nan_to_num(self.X, nan=0.0, posinf=0.0, neginf=0.0)
         self.torch_mask = torch.tensor(self.mask)
         self.centered_log_data_noNA = self.X.cpu().numpy()
-        self.omic_means = np.nanmean(self.data, axis=0, keepdims=1) 
+        self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
         self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
-        self.X = torch.tensor(self.centered_log_data_noNA + self.omic_means, dtype=torch.float64) #TEST
-        self.raw_filtered = copy.deepcopy(self.data)
+        self.X = self.X + self.omic_means_torch
+        self.raw_filtered = self.data
         self.raw_x = torch.tensor(self.raw_filtered.values)
         self.intron_ranges = pd.DataFrame({
             "Chromosome": self.split_reads["seqnames"],
@@ -560,14 +560,17 @@ class FraserDataset(Dataset, PCADataset):
         nsr_donor   = nsr.reindex(self.split_reads["startID"].values).fillna(0).astype(int).set_axis(junc_idx)
         nsr_acceptor = nsr.reindex(self.split_reads["endID"].values).fillna(0).astype(int).set_axis(junc_idx)
         self.nonsplitCounts = nsr_donor + nsr_acceptor  # junctions × samples
+        del nsr, nsr_donor, nsr_acceptor
 
         # Vectorized lookup: group split reads by startID and endID, sum counts per site
         split_by_start = self.split_reads.groupby("startID")[self.sample_ids].sum()
         split_by_end   = self.split_reads.groupby("endID")[self.sample_ids].sum()
         alt_donor   = split_by_start.reindex(self.split_reads["startID"].values).fillna(0).astype(int).set_axis(junc_idx)
         alt_acceptor = split_by_end.reindex(self.split_reads["endID"].values).fillna(0).astype(int).set_axis(junc_idx)
+        del split_by_start, split_by_end
 
         result_df = alt_donor + alt_acceptor + self.nonsplitCounts
+        del alt_donor, alt_acceptor
         return result_df - self.K
 
     def filter_expression_jaccard(self, minExpressionInOneSample=20, quantile=0.95, quantileMinExpression=10):
@@ -701,21 +704,22 @@ class FraserDataset(Dataset, PCADataset):
     
     def calculate_counts(self) -> dict[str, pd.DataFrame]:
         # returns samples* junctions
-        nonsplitProportion = self.nonsplitCounts / self.N
+        nonsplitProportion = (self.nonsplitCounts / self.N).astype(np.float32)
 
         def broadcast(series: pd.Series) -> pd.DataFrame:
-            """Repeat a per-junction scalar across all sample columns."""
-            return pd.DataFrame({col: series for col in self.sample_ids}, index=self.N.index)
+            """Repeat a per-junction scalar across all sample columns via a zero-copy view."""
+            values = np.broadcast_to(series.values[:, None], (len(series), len(self.sample_ids)))
+            return pd.DataFrame(values, index=self.N.index, columns=self.sample_ids)
 
         return {
-            'counts':                        self.K.T,
-            'totalCounts':                   self.N.T,
-            'nonsplitCounts':                self.nonsplitCounts.T,
+            'counts':                        self.K.T.astype(np.int32),
+            'totalCounts':                   self.N.T.astype(np.int32),
+            'nonsplitCounts':                self.nonsplitCounts.T.astype(np.int32),
             'nonsplitProportion':            nonsplitProportion.T,
-            'meanCounts':                    broadcast(self.K.mean(axis=1)).T,
-            'meanTotalCounts':               broadcast(self.N.mean(axis=1)).T,
+            'meanCounts':                    broadcast(self.K.mean(axis=1).astype(np.float32)).T,
+            'meanTotalCounts':               broadcast(self.N.mean(axis=1).astype(np.float32)).T,
             'nonsplitProportion_99quantile': broadcast(
-                pd.Series(np.quantile(nonsplitProportion.values, 0.99, axis=1),
+                pd.Series(np.quantile(nonsplitProportion.values, 0.99, axis=1).astype(np.float32),
                           index=self.N.index)
             ).T,
         }

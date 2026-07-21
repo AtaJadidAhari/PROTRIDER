@@ -1,4 +1,7 @@
 import os
+import gc
+import gzip
+import resource
 import numpy as np
 import pandas as pd
 from typing import Union, Tuple, Literal, Optional
@@ -17,6 +20,13 @@ import time
 __all__ = ["run"]
 
 logger = logging.getLogger(__name__)
+
+
+def log_peak_memory(label: str):
+    """Log the process' peak resident set size (maxrss) so far, for tracking down memory spikes."""
+    maxrss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    logger.info('[mem] %s: peak RSS so far = %.2f GB', label, maxrss_kb / 1e6)
+
 
 class StepTimer:
     def __init__(self):
@@ -42,90 +52,170 @@ class Result:
     df_pvals_adj: pd.DataFrame
     log2fc: np.ndarray
     fc: np.ndarray
-    # n_out_median: int 
-    # n_out_max: int
-    # n_out_total: int
     pval_dist: str = 'gaussian'  # Distribution used for p-value computation
     outlier_threshold: float = 0.1  # Threshold for determining outliers (adjusted p value cutoff)
     delta_psi_cutoff: float = 0.1  # Threshold for delta PSI (jaccard) for fraser
     min_count: int = 5  # Minimum total count threshold for fraser
-    gene_pvals: Optional[pd.DataFrame] = None  # fraser only: Holm p-value per gene x sample, pre-BY (genes x samples)
-    kept_junctions: Optional[pd.DataFrame] = None  # fraser only: representative junction id per gene x sample (genes x samples)
+    gene_level_info: Optional[dict] = None  # Gene-level information for Fraser 
+    junction_chunk_rows:int = 500_000  # Target number of long-format rows (samples * junctions) held in memory per chunk.
 
-    def detect_outliers(self, df_res, analysis: str = "protrider") -> pd.DataFrame:
+    def detect_outliers(self, df_res, prefix = 'PROTEIN', analysis: str = "protrider") -> pd.DataFrame:
         if analysis == "fraser":
-            df_res['JUNCTION_outlier'] = (df_res['JUNCTION_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() >= self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
+            df_res[f'{prefix}_outlier'] = (df_res[f'{prefix}_PADJ'] <= self.outlier_threshold) & (df_res['JUNCTION_DELTAPSI'].abs() >= self.delta_psi_cutoff) & (df_res['totalCounts'] >= self.min_count)
         else:
-            df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
-            outs_per_sample = df_res.groupby('sampleID')['PROTEIN_outlier'].sum().values
-            #outs_per_sample = np.sum(df_pvals_adj.values <= outlier_threshold, axis=1)
+            df_res[f'{prefix}_outlier'] = df_res[f'{prefix}_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
+            outs_per_sample = df_res.groupby('sampleID')[f'{prefix}_outlier'].sum().values
             n_out_median = np.nanmedian(outs_per_sample)
             n_out_max = np.nanmax(outs_per_sample)
             n_out_total = np.nansum(outs_per_sample)
-            logger.info(
-                f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}, max: {n_out_max}, total: {n_out_total}')
-
-            logger.info(
-                f'Finished computing pvalues. No. outliers per sample in median: {np.nanmedian(outs_per_sample)}')
-            df_res['PROTEIN_outlier'] = df_res['PROTEIN_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
+            logger.info(f'Finished computing pvalues. No. outliers per sample in median: {n_out_median}, max: {n_out_max}, total: {n_out_total}')
+            logger.info(f'Finished computing pvalues. No. outliers per sample in median: {np.nanmedian(outs_per_sample)}')
+            df_res[f'{prefix}_outlier'] = df_res[f'{prefix}_PADJ'].apply(lambda x:  x <= self.outlier_threshold)
         return df_res
 
-    def add_fraser_aggregate_columns(self, df_res):
-        df_res['numSamplesPerGene'] = (df_res.groupby('hgnc_symbol')['sampleID'].transform('nunique'))
-        df_res['numEventsPerGene'] = (df_res.groupby(['hgnc_symbol', 'sampleID'])['sampleID'].transform('count'))
-        df_res['numSamplesPerJunc'] = (df_res.groupby(['seqnames', 'start', 'end', 'strand'])['sampleID'].transform('nunique'))
-        return df_res
+    def write_fraser_gene_level_table(self, all_path: str, filtered_path: str) -> pd.DataFrame:
+        pvals_for_by = self.gene_level_info['pvals_for_by']       # genes x samples
+        kept_junctions = self.gene_level_info['kept_junctions']   # genes x samples
+        gene_padj = self.df_pvals_adj                             # genes x samples
 
-    def build_fraser_gene_level_table(self) -> pd.DataFrame:
-
-        if self.gene_pvals is None or self.kept_junctions is None:
-            raise ValueError(
-                "Gene-level p-values are not available on this Result. "
-                "Re-run the pipeline with config.aggregate=True to produce them."
-            )
-        # genes x samples -> one row per gene/sample
-        gene_level = pd.concat({
-            'JUNCTION_PVALUE': self.gene_pvals,    
-            'JUNCTION_PADJ': self.df_pvals_adj,    
-            'junctionID': self.kept_junctions}, axis=1).stack(future_stack=True).reset_index()
-        gene_level.columns = ['hgnc_symbol', 'sampleID', 'JUNCTION_PVALUE', 'JUNCTION_PADJ', 'junctionID']
-
-        # samples x junctions -> looked up by (sampleID, junctionID) for the representative junction
-        junction_level = pd.concat({
+        junction_wide = {
             'JUNCTION_PSI': self.dataset.jaccard_index.T,
             'JUNCTION_DELTAPSI': self.df_res,
+            'JUNCTION_PVALUE': self.df_pvals,
+            'JUNCTION_PADJ': self.gene_level_info['junction_pvals_adj'].T,
             **self.dataset.calculate_counts(),
-        }, axis=1).stack(future_stack=True).reset_index()
-        junction_level = junction_level.rename(columns={junction_level.columns[0]: 'sampleID',
-                                                         junction_level.columns[1]: 'junctionID'})
+        }  # samples x junctions
 
-        df_res = gene_level.merge(junction_level, on=['sampleID', 'junctionID'], how='left')
-
-        junc_meta = pd.concat([
+        junc_static_meta = pd.concat([
             self.dataset.split_reads[["seqnames", "start", "end", "width", "strand"]],
             self.dataset.intron_ranges[["annotatedJunction"]],
             ], axis=1)
-        df_res = df_res.merge(junc_meta, left_on='junctionID', right_index=True, how='left')
-        df_res.drop(columns=['junctionID'], inplace=True, errors='ignore')
 
-        return df_res
+        gene_ids = pvals_for_by.index
+        n_samples = len(self.dataset.sample_ids)
+        chunk_size = max(1, self.junction_chunk_rows // max(1, n_samples))
 
+        def build_chunk(gene_chunk):
+            gene_junctions = kept_junctions.reindex(gene_chunk)
 
-    def save(self, out_dir: str, format: Literal["wide", "long"] = "wide", 
-            include_all: bool = False, analysis: str = "protrider", aggregate: bool = False) -> Optional[pd.DataFrame]:
+            # genes x samples -> one row per gene/sample
+            gene_level = pd.concat({
+                'GENE_PVALUE': pvals_for_by.reindex(gene_chunk),
+                'GENE_PADJ': gene_padj.reindex(gene_chunk),
+                'junctionID': gene_junctions,
+            }, axis=1).stack(future_stack=True).reset_index()
+            gene_level.columns = ['hgnc_symbol', 'sampleID', 'GENE_PVALUE', 'GENE_PADJ', 'junctionID']
+
+            junc_ids_needed = pd.unique(gene_junctions.to_numpy().ravel())
+            junc_ids_needed = junc_ids_needed[pd.notna(junc_ids_needed)]
+
+            # samples x junctions -> looked up by (sampleID, junctionID) for the representative junction
+            junction_level = pd.concat({k: v.reindex(columns=junc_ids_needed) for k, v in junction_wide.items()}, axis=1).stack(future_stack=True).reset_index()
+            junction_level = junction_level.rename(columns={junction_level.columns[0]: 'sampleID', junction_level.columns[1]: 'junctionID'})
+
+            df_chunk = gene_level.merge(junction_level, on=['sampleID', 'junctionID'], how='left')
+            del gene_level, junction_level
+
+            df_chunk = df_chunk.merge(junc_static_meta.reindex(junc_ids_needed), left_on='junctionID', right_index=True, how='left')
+            df_chunk.drop(columns=['junctionID'], inplace=True, errors='ignore')
+            return df_chunk
+
+        return self.stream_write_long_table(all_path, filtered_path, gene_ids, chunk_size, build_chunk, prefix='GENE', analysis='fraser', compressed=False)
+
+    def fraser_junc_meta_with_aggregates(self) -> pd.DataFrame:
+        junc_meta = pd.concat([
+            self.dataset.split_reads[["seqnames", "start", "end", "width", "strand"]],
+            self.dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]],
+            ], axis=1)
+        for col in ["seqnames", "strand", "hgnc_symbol", "annotatedJunction"]:
+            junc_meta[col] = junc_meta[col].astype("category")
+
+        n_samples = len(self.dataset.sample_ids)
+        has_gene = junc_meta['hgnc_symbol'].notna()
+        junc_meta['numSamplesPerJunc'] = n_samples
+        junc_meta['numSamplesPerGene'] = np.where(has_gene, n_samples, np.nan)
+        junc_meta['numEventsPerGene'] = junc_meta.groupby('hgnc_symbol', observed=True)['hgnc_symbol'].transform('size')
+        junc_meta.loc[~has_gene, 'numEventsPerGene'] = np.nan
+        return junc_meta
+
+    def stream_write_long_table(self, all_path: str, filtered_path: str, chunk_ids, chunk_size: int,
+                                  build_chunk, prefix: str, analysis: str, compressed: bool = True) -> pd.DataFrame:
+        open_fn = gzip.open if compressed else open
+        filtered_chunks = []
+        total_rows = 0
+        with open_fn(all_path, 'wt') as f_out:
+            for i in range(0, len(chunk_ids), chunk_size):
+                id_chunk = chunk_ids[i:i + chunk_size]
+                df_chunk = build_chunk(id_chunk)
+                df_chunk = self.finalize_long(df_chunk, prefix=prefix, analysis=analysis)
+
+                first = (i == 0)
+                df_chunk.to_csv(f_out, header=first, index=False)
+                total_rows += len(df_chunk)
+                df_filtered_chunk = df_chunk[df_chunk[f'{prefix}_outlier']].copy()
+                logger.info(f'Wrote {prefix.lower()}-level output summary chunk {i}-{i + len(id_chunk)} to {all_path}')
+                filtered_chunks.append(df_filtered_chunk)
+
+                del df_chunk, df_filtered_chunk
+                gc.collect()
+            logger.info(f'Finished writing {prefix.lower()}-level output summary to {all_path} with total rows: {total_rows}')
+
+        df_filtered = pd.concat(filtered_chunks, ignore_index=True).sort_values(f'{prefix}_PVALUE')
+        df_filtered.to_csv(filtered_path, index=False)
+        logger.info(f'\t--- Removing non-significant {prefix.lower()}s. \n\tOriginal len: {total_rows}, new len: {df_filtered.shape[0]}---')
+        logger.info(f'Saved {prefix.lower()}-level filtered output summary with shape {df_filtered.shape} to {filtered_path}')
+        return df_filtered
+
+    def write_fraser_junction_level_table(self, all_path: str, filtered_path: str) -> pd.DataFrame:
+        wide = {
+            'JUNCTION_PSI': self.dataset.jaccard_index.T.astype(np.float32),
+            'JUNCTION_DELTAPSI': self.df_res.astype(np.float32),
+            'JUNCTION_PVALUE': self.df_pvals.astype(np.float32),
+            'JUNCTION_PADJ': self.gene_level_info['junction_pvals_adj'].T.astype(np.float32),
+            **self.dataset.calculate_counts(),
+        }
+        junc_meta = self.fraser_junc_meta_with_aggregates()
+
+        junction_ids = wide['JUNCTION_PSI'].columns
+        for v in wide.values():
+            junction_ids = junction_ids.union(v.columns, sort=False)
+        n_samples = len(self.dataset.sample_ids)
+        chunk_size = max(1, self.junction_chunk_rows // max(1, n_samples))
+
+        def build_chunk(junc_chunk):
+            combined = pd.concat({k: v.reindex(columns=junc_chunk) for k, v in wide.items()}, axis=1)
+            df_chunk = combined.stack(future_stack=True).reset_index()
+            df_chunk.columns = ['sampleID', 'junctionID'] + list(combined.columns.get_level_values(0).unique())
+            del combined
+
+            df_chunk = df_chunk.merge(junc_meta.reindex(junc_chunk), left_on='junctionID', right_index=True, how='left')
+            df_chunk.drop(columns=['junctionID'], inplace=True, errors='ignore')
+            return df_chunk
+
+        return self.stream_write_long_table(all_path, filtered_path, junction_ids, chunk_size, build_chunk, prefix='JUNCTION', analysis='fraser')
+
+    def finalize_long(self, df_res: pd.DataFrame, prefix: str, analysis: str) -> pd.DataFrame:
+        df_res['pvalDistribution'] = self.pval_dist
+        df_res = self.detect_outliers(df_res, prefix=prefix, analysis=analysis)
+        return df_res.sort_values(by=f'{prefix}_PVALUE', ascending=True)
+
+    def save(self, out_dir: str, format: Literal["wide", "long"] = "wide",
+            include_all: bool = False, analysis: str = "protrider") -> Optional[pd.DataFrame]:
         """
         Save result dataframes to CSV files.
-        
+
         Args:
             out_dir: Output directory path where files will be saved
             format: Output format - "wide" saves separate CSV files for each metric,
                    "long" saves a single combined CSV in long format
             include_all: If False, only save significant results in long format
-                        (uses self.outlier_threshold for filtering)
-            
+                        (uses self.outlier_threshold for filtering). Ignored when
+                        analysis == "fraser": all 4 combinations of
+                        include_all/aggregate are always written.
+
         Returns:
             DataFrame if format="long", None if format="wide"
-            
+
         """
         summary_dir = out_dir
         out_dir = f"{out_dir}/{analysis}"
@@ -148,10 +238,10 @@ class Result:
             self.df_res.T.to_csv(out_p, header=True, index=True)
             logger.info(f"Saved residuals to {out_p}")
 
-            if self.df_presence is not None:
-                out_p = f'{out_dir}/presence_probs.csv'
-                self.df_presence.T.to_csv(out_p, header=True, index=True)
-                logger.info(f"Saved presence probabilities to {out_p}")
+            # presence probabilities
+            out_p = f'{out_dir}/presence_probs.csv'
+            self.df_presence.T.to_csv(out_p, header=True, index=True)
+            logger.info(f"Saved presence probabilities to {out_p}")
 
             # p-values
             out_p = f'{out_dir}/pvals.csv'
@@ -169,10 +259,9 @@ class Result:
             logger.info(f"Saved adjusted P-values to {out_p}")
 
             # Z-scores
-            if analysis != 'fraser':
-                out_p = f'{out_dir}/zscores.csv'
-                self.df_Z.T.to_csv(out_p, header=True, index=True)
-                logger.info(f"Saved z scores to {out_p}")
+            out_p = f'{out_dir}/zscores.csv'
+            self.df_Z.T.to_csv(out_p, header=True, index=True)
+            logger.info(f"Saved z scores to {out_p}")
 
             # log2fc
             out_p = f'{out_dir}/log2fc.csv'
@@ -195,86 +284,57 @@ class Result:
         elif format == "long":
             logger.info('=== Saving results in long format ===')
 
-            prefix = 'junction' if analysis == 'fraser' else 'protein'
+            if analysis == 'fraser':
+                log_peak_memory('before building junction-level table')
+                all_p = f"{summary_dir}/{analysis}_summary_all_junctions.csv.gz"
+                filtered_p = f"{summary_dir}/{analysis}_summary_filtered_junctions.csv"
+                df_junc_filtered = self.write_fraser_junction_level_table(all_p, filtered_p)
+                log_peak_memory('after building junction-level table')
 
-            if analysis == 'fraser' and aggregate:
-                df_res = self.build_fraser_gene_level_table()
-            else:
-                # Stack all dataframes at once for efficient melting
-                if self.df_pvals.shape != self.df_pvals_adj.shape:
-                    self.df_pvals_adj = self.df_pvals_adj.T
+                all_p = f"{summary_dir}/{analysis}_summary_all_genes.csv"
+                filtered_p = f"{summary_dir}/{analysis}_summary_filtered_genes.csv"
+                df_gene_filtered = self.write_fraser_gene_level_table(all_p, filtered_p)
+                log_peak_memory('after building gene-level table')
 
-                # Create a multi-index dataframe with all values
-                if analysis == 'fraser':
-                    dfs_to_melt = {
-                        'JUNCTION_PSI': self.dataset.jaccard_index.T,         # samples × junctions
-                        # 'JUNCTION_PSI': self.df_out,         # samples × junctions
-                        'JUNCTION_DELTAPSI': self.df_res,    # samples × junctions
-                        'JUNCTION_PVALUE': self.df_pvals,    # samples × junctions
-                        'JUNCTION_PADJ': self.df_pvals_adj,  # samples × junctions
-                        **self.dataset.calculate_counts()
-                    }
+                result = df_junc_filtered
+                del df_gene_filtered
+                gc.collect()
+                log_peak_memory('after freeing gene long table')
 
-                else:
-                    dfs_to_melt = {
-                        'PROTEIN_LOG2INT': self.dataset.data,
-                        'PROTEIN_EXPECTED_LOG2INT': self.df_out,
-                        'PROTEIN_INT': self.dataset.raw_data,
-                        'PROTEIN_ZSCORE': self.df_Z,
-                        'PROTEIN_PVALUE': self.df_pvals,
-                        'PROTEIN_PADJ': self.df_pvals_adj,
-                        'PROTEIN_LOG2FC': self.log2fc,
-                        'PROTEIN_FC': self.fc,
-                    }
+                return result
 
-                    if self.df_presence is not None:
-                        dfs_to_melt['pred_presence_probability'] = self.df_presence
+            if self.df_pvals.shape != self.df_pvals_adj.shape:
+                self.df_pvals_adj = self.df_pvals_adj.T
 
+            dfs_to_melt = {
+                'PROTEIN_LOG2INT': self.dataset.data,
+                'PROTEIN_EXPECTED_LOG2INT': self.df_out,
+                'PROTEIN_INT': self.dataset.raw_data,
+                'PROTEIN_ZSCORE': self.df_Z,
+                'PROTEIN_PVALUE': self.df_pvals,
+                'PROTEIN_PADJ': self.df_pvals_adj,
+                'PROTEIN_LOG2FC': self.log2fc,
+                'PROTEIN_FC': self.fc,
+            }
+            if self.df_presence is not None:
+                dfs_to_melt['pred_presence_probability'] = self.df_presence
 
-                # Concatenate all dataframes along columns with a multi-index
-                combined = pd.concat(dfs_to_melt, axis=1)
+            combined = pd.concat(dfs_to_melt, axis=1)
+            df_res = combined.stack(future_stack=True).reset_index()
+            df_res.columns = ['sampleID', 'proteinID'] + list(dfs_to_melt.keys())
 
-                # Melt once instead of multiple times (use future_stack=True for pandas 2.1+)
-                #df_res = combined.stack(future_stack=True).reset_index()
-                df_res = combined.stack().reset_index()
-
-                df_res.columns = ['sampleID', f'{prefix}ID'] + list(dfs_to_melt.keys())
-
-                if analysis == 'fraser':
-                    junc_meta = pd.concat([
-                        self.dataset.split_reads[["seqnames", "start", "end", "width", "strand"]],
-                        self.dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]],
-                        ], axis=1)
-                    df_res = df_res.merge(junc_meta, left_on='junctionID', right_index=True, how='left')
-                    df_res.drop(columns=['junctionID'], inplace=True, errors='ignore')
-                    df_res = self.add_fraser_aggregate_columns(df_res)
-
-            df_res['pvalDistribution'] = self.pval_dist
-            df_res = self.detect_outliers(df_res, analysis)
+            df_res = self.finalize_long(df_res, prefix='PROTEIN', analysis=analysis)
 
             if not include_all:
                 original_len = df_res.shape[0]
-                df_res = df_res.query(f'{prefix.upper()}_outlier==True')
+                df_res = df_res.query('PROTEIN_outlier==True')
                 logger.info(
-                        f'\t--- Removing non-significant sample-{prefix} combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
+                    f'\t--- Removing non-significant sample-protein combinations. \n\tOriginal len: {original_len}, new len: {df_res.shape[0]}---')
 
-            df_res.sort_values(by=[f'{prefix.upper()}_PVALUE'], inplace=True, ascending=True)
             out_p = f"{summary_dir}/{analysis}_summary.csv"
-            
-            if analysis == 'fraser':
-                match (include_all, aggregate):
-                    case (False, False):
-                        out_p = f"{summary_dir}/{analysis}_summary_filtered_junctions.csv"
-                    case (False, True):
-                        out_p = f"{summary_dir}/{analysis}_summary_filtered_genes.csv"
-                    case (True, False):
-                        out_p = f"{summary_dir}/{analysis}_summary_all_junctions.csv"
-                    case (True, True):
-                        out_p = f"{summary_dir}/{analysis}_summary_all_genes.csv"
-
             df_res.to_csv(out_p, index=None)
             logger.info(f'Saved output summary with shape {df_res.shape} to {out_p}')
-            
+
             return df_res
     
     def plot_pvals(self, out_dir: str = None, **kwargs):
@@ -528,31 +588,13 @@ def _run_protrider_standard(
 
     # 1. Initialize dataset
     logger.info('Initializing dataset')
-    # if config.analysis == "protrider":
-    #     dataset = ProtriderDataset(input_intensities=input_intensities,
-    #                            index_col=config.index_col,
-    #                            sa_file=sample_annotation,
-    #                            cov_used=config.cov_used,
-    #                            log_func=config.log_func,
-    #                            maxNA_filter=config.max_allowed_NAs_per_protein,
-    #                            device=config.device_torch,
-    #                            input_format=config.input_format)
-    # elif config.analysis == "outrider":
-    #     dataset = OutriderDataset(input_intensities=input_intensities,
-    #                            index_col=config.index_col,
-    #                            sa_file=sample_annotation,
-    #                            cov_used=config.cov_used,
-    #                            log_func=config.log_func,
-    #                            fpkm_cutoff=config.fpkmCutoff,
-    #                            gtf=config.gtf,
-    #                            device=config.device_torch,
-    #                            input_format=config.input_format)
     dataset  = OmicDataset(analysis=config.analysis,
                            split_reads=[config.split_reads], 
                            unsplit_reads=[config.unsplit_reads],
                             minExpressionInOneSample = config.min_expression_in_one_sample, 
                             quantile = config.quantile_for_filtering,
                             quantileMinExpression = config.quantile_min_expression,
+                            min_delta_psi=config.min_delta_psi,
                             pseudocount = config.pseudocount,
                             input_intensities=input_intensities,
                             index_col=config.index_col,
@@ -630,22 +672,6 @@ def _run_protrider_standard(
     logger.info('Computing statistics')
     model_input = model if config.analysis != "protrider" else None
     mu, sigma, df0, df_res = fit_residuals(dataset, df_out, model_input, config) # for fraser df_res is N.T
-    # if config.analysis == "protrider":
-    #     df_res = dataset.data - df_out  # log data - pred data
-    #     mu, sigma, df0 = fit_residuals(df_res.values, dis=config.pval_dist, n_jobs=config.n_jobs)
-    # elif config.analysis == "outrider":
-    #     df_out_clamped = np.clip(df_out, -700, 700)
-    #     df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
-    #     df_out = df_res
-    #     sigma = None
-    #     df0 = None
-
-    #     mu, theta = model.get_dispersion_parameters()
-
-    #     if mu is None:
-    #         # Fitting NB for outrider if it is not set yet
-    #         model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64)) #TODO fro fraser
-    #         mu, theta = model.get_dispersion_parameters()
 
     x_true = dataset.K.T.values if config.analysis == "fraser" else dataset.raw_filtered.values
     pvals, Z = get_pvals(x_true=x_true,
@@ -676,11 +702,7 @@ def _run_protrider_standard(
     else:
         pvals_for_adj = pd.DataFrame(pvals, index=dataset.data.index, columns=dataset.data.columns)
 
-    pvals_adj, gene_level_info = adjust_pvals(pvals_for_adj, method=config.pval_adj, group_ids=group_ids, aggregate=config.aggregate, n_jobs = config.n_jobs)
-    gene_pvals, kept_junctions = None, None
-    if config.aggregate and config.analysis == "fraser":
-        gene_pvals = gene_level_info['pvals_for_by']
-        kept_junctions = gene_level_info['kept_junctions']
+    pvals_adj, gene_level_info = adjust_pvals(pvals_for_adj, method=config.pval_adj, group_ids=group_ids, aggregate=True, n_jobs=config.n_jobs)
     timer.step('Adjusting p-values')
     #  df_res for Fraser from here on is the actual delta psi
     df_res = np.round(dataset.jaccard_index.T - mu.T, decimals=2) if config.analysis == "fraser" else df_res
@@ -690,7 +712,7 @@ def _run_protrider_standard(
                              pseudocount=config.pseudocount, outlier_threshold=config.outlier_threshold,
                              delta_psi_cutoff = config.delta_psi_threshold, min_count=config.min_count,
                              base_fn=config.base_fn, pval_dist=config.pval_dist,
-                             gene_pvals=gene_pvals, kept_junctions=kept_junctions)
+                             gene_level_info=gene_level_info)
     model_info = ModelInfo(q=np.array(q), learning_rate=np.array(config.lr),
                            n_epochs=np.array(config.n_epochs), test_loss=np.array(final_loss),
                            train_losses=np.array(train_losses), df_folds=None)
@@ -882,11 +904,22 @@ def _run_protrider_cv(
                                    dis=config.pval_dist,
                                    n_jobs=config.n_jobs)
 
-    pvals_adj, rows_to_keep = adjust_pvals(pvals, method=config.pval_adj, group_ids=group_ids)
+    group_ids = dataset.intron_ranges["hgnc_symbol"] if config.analysis == "fraser" else None
+    # TODO make it shorter!
+    if isinstance(pvals, pd.DataFrame):
+        pvals_for_adj = pvals
+    elif config.analysis == "fraser":
+        pvals_for_adj = pd.DataFrame(pvals.T, index=dataset.data.columns, columns=dataset.data.index)
+    else:
+        pvals_for_adj = pd.DataFrame(pvals, index=dataset.data.index, columns=dataset.data.columns)
+
+    pvals_adj, gene_level_info = adjust_pvals(pvals_for_adj, method=config.pval_adj, group_ids=group_ids, aggregate=True, n_jobs=config.n_jobs)
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
                              pvals=pvals, Z=Z, pvals_one_sided=pvals_one_sided, pvals_adj=pvals_adj,
-                             pseudocount=config.pseudocount, delta_psi_cutoff = config.delta_psi_threshold, min_count=config.min_count,
-                             outlier_threshold=config.outlier_threshold, base_fn=config.base_fn, pval_dist=config.pval_dist)
+                             pseudocount=config.pseudocount, outlier_threshold=config.outlier_threshold,
+                             delta_psi_cutoff = config.delta_psi_threshold, min_count=config.min_count,
+                             base_fn=config.base_fn, pval_dist=config.pval_dist,
+                             gene_level_info=gene_level_info)
     model_info = ModelInfo(q=np.array(q_list), learning_rate=np.array(config.lr),
                            n_epochs=np.array(config.n_epochs), test_loss=np.array(test_loss_list),
                            train_losses=np.array(train_losses_list, dtype=object), 
@@ -979,7 +1012,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
 
 def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset,
                     pseudocount, outlier_threshold, base_fn, pval_dist, delta_psi_cutoff=0.1, min_count=5,
-                    gene_pvals=None, kept_junctions=None):
+                    gene_level_info = None):
     # Store as df
     if not isinstance(pvals_adj, pd.DataFrame):
         df_pvals_adj = pd.DataFrame(pvals_adj)
@@ -1004,7 +1037,7 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     else:
         df_Z = Z
 
-    if not isinstance(pvals_one_sided, pd.DataFrame) and pvals_one_sided is not None: # TODO add for fraser to plot
+    if not isinstance(pvals_one_sided, pd.DataFrame) and pvals_one_sided is not None: 
         df_pvals_one_sided = pd.DataFrame(pvals_one_sided)
         df_pvals_one_sided.columns = dataset.data.columns
         df_pvals_one_sided.index = dataset.data.index
@@ -1024,4 +1057,4 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     return Result(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence, df_pvals=df_pvals, df_Z=df_Z,
                   df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc,
                   pval_dist=pval_dist, outlier_threshold=outlier_threshold, delta_psi_cutoff = delta_psi_cutoff, min_count = min_count,
-                  gene_pvals=gene_pvals, kept_junctions=kept_junctions)
+                  gene_level_info = gene_level_info)
