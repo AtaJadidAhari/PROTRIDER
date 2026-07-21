@@ -1,13 +1,11 @@
 # path to output directory to store result files
-out_dir: /s/project/py_fraser/PROTRIDER/output_gtex/Brain
-#out_dir: /s/project/py_fraser/PROTRIDER/output_kremer/fraser
+#out_dir: /s/project/py_fraser/gtex/output_gtex/Python/Brain
+out_dir: /s/project/py_fraser/output/output_kremer/fraser
 
 # csv input file containing intensities. Columns are samples and rows are proteins.
 input_intensities: "sample_data/protrider_sample_dataset.tsv"
-#split_reads: "/s/project/py_fraser/exported_counts/fraser8653/raw-local-fraser_s.csv"
-#unsplit_reads: "/s/project/py_fraser/exported_counts/fraser8653/raw-local-fraser_u.csv"
-split_reads: "/s/project/py_fraser/PROTRIDER/sample_data/gtex/raw-local-Brain_-_Cerebellum_s.csv"
-unsplit_reads: "/s/project/py_fraser/PROTRIDER/sample_data/gtex/raw-local-Brain_-_Cerebellum_u.csv"
+split_reads: "/s/project/py_fraser/exported_counts/fraser8653/raw-local-fraser_s.csv"
+unsplit_reads: "/s/project/py_fraser/exported_counts/fraser8653/raw-local-fraser_u.csv"
 
 # column name in the input file indicating the column name containing the protein names/IDs
 #index_col: "protein_ID"
@@ -26,8 +24,8 @@ max_allowed_NAs_per_protein: 0.3
 analysis: "fraser"
 fpkmCutoff: 1
 # gtf: "/s/genomes/human/hg38/gencode.v34/gencode.v34.annotation.gtf.gz"
-#gtf: "/s/genomes/human/hg19/gencode29/gencode.v29lift37.sorted.gtf.gz" # kremer
-gtf: "/s/genomes/human/hg38/gencode.v34/gencode.v34.annotation.gtf.gz" #gtex
+gtf: "/s/genomes/human/hg19/gencode29/gencode.v29lift37.sorted.gtf.gz" # kremer
+#gtf: "/s/genomes/human/hg38/gencode.v34/gencode.v34.annotation.gtf.gz" #gtex
 
 # names of columns in the sample annotation file to be passed as covariates to the autoencoder.
 # leaving this empty results in no covariates passed to the model
@@ -82,7 +80,7 @@ outlier_threshold: 0.1 # for adjusted p values
 delta_psi_threshold : 0.1 # for fraser
 min_count : 5 # for fraser
 report_all: False 
-aggregate : False
+
 
 verbose: False
 device: 'cpu'

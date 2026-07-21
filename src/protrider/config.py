@@ -96,7 +96,6 @@ class ProtriderConfig:
     # Reporting params
     outlier_threshold: float = 0.1
     report_all: bool = True
-    aggregate: bool = False
     
     # Runtime params
     verbose: bool = False
