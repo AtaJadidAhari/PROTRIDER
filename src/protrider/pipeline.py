@@ -4,6 +4,7 @@ from typing import Union, Tuple, Literal, Optional
 import logging
 import torch
 from dataclasses import dataclass
+from pathlib import Path
 
 from .model import train, train_val, MSEBCELoss, ProtriderAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
 from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset
@@ -15,6 +16,81 @@ from .config import ProtriderConfig
 __all__ = ["run"]
 
 logger = logging.getLogger(__name__)
+
+
+def save_model(model: ProtriderAutoencoder, checkpoint_path: str, q: int) -> None:
+    """Save model state dict and metadata to checkpoint path.
+    
+    Args:
+        model: Trained ProtriderAutoencoder model
+        checkpoint_path: Path where to save the model checkpoint
+        q: Latent dimension
+    """
+    checkpoint_path = Path(checkpoint_path)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Save model state dict and metadata
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'q': q,
+        'n_layers': model.n_layers,
+        'presence_absence': model.presence_absence,
+    }, checkpoint_path)
+    
+    logger.info(f'Saved model to {checkpoint_path}')
+
+
+def load_model(dataset: Union[ProtriderDataset, ProtriderSubset], checkpoint_path: str, 
+               config: ProtriderConfig) -> Tuple[Optional[ProtriderAutoencoder], Optional[int]]:
+    """Load model from checkpoint path if it exists.
+    
+    Args:
+        dataset: Dataset used for model initialization
+        checkpoint_path: Path to the model checkpoint file
+        config: ProtriderConfig object
+        
+    Returns:
+        Tuple of (model, q) if model exists and loads successfully, (None, None) otherwise
+    """
+    checkpoint_path = Path(checkpoint_path)
+    
+    if not checkpoint_path.exists():
+        logger.info(f'No existing model found at {checkpoint_path}')
+        return None, None
+    
+    try:
+        # Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location=config.device_torch, weights_only=False)
+        q = checkpoint['q']
+        n_layers = checkpoint['n_layers']
+        presence_absence = checkpoint.get('presence_absence', False)
+        
+        logger.info(f'Loading model from {checkpoint_path} (q={q}, n_layers={n_layers})')
+        
+        # Initialize model with saved architecture
+        n_cov = dataset.covariates.shape[1]
+        n_prots = dataset.X.shape[1]
+        model = ProtriderAutoencoder(
+            in_dim=n_prots, 
+            latent_dim=q, 
+            n_layers=n_layers, 
+            h_dim=config.h_dim, 
+            n_cov=n_cov,
+            prot_means=None,
+            presence_absence=presence_absence
+        )
+        model.double().to(config.device_torch)
+        
+        # Load state dict
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        logger.info('Successfully loaded model')
+        return model, q
+        
+    except Exception as e:
+        logger.warning(f'Failed to load model from {checkpoint_path}: {e}')
+        return None, None
+
 
 @dataclass
 class Result:
@@ -449,6 +525,15 @@ def _run_protrider_standard(
                                gtf=config.gtf,
                                device=config.device_torch,
                                input_format=config.input_format)
+    
+    # 2. Determine checkpoint path and try to load existing model
+    model = None
+    q = None
+    # Use custom checkpoint path if specified, otherwise default to out_dir/model.pt
+    if config.checkpoint_path:
+        checkpoint_path = Path(config.checkpoint_path)
+    else:
+        checkpoint_path = Path(config.out_dir) / 'model.pt'
 
     # 2. Find latent dim
     logger.info('Finding latent dimension')
@@ -507,6 +592,7 @@ def _run_protrider_standard(
         _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config.n_epochs, learning_rate=float(config.lr), batch_size=config.batch_size)
         df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion, batch_size=config.batch_size)
         logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_reconstruction_loss, final_bce_loss)
+        save_model(model, str(checkpoint_path), q)
     else:
         final_loss = init_loss
 
