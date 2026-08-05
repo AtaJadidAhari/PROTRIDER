@@ -88,9 +88,10 @@ class ProtriderConfig:
     fit_every_fold: bool = False
     
     # Statistical params
-    pval_dist: Literal["gaussian", "t", "nb"] = "t"
-    pval_adj: Literal["by", "bh"] = "by"
+    pval_dist: Literal["gaussian", "t", "nb", "bb"] = "t"
+    pval_adj: Literal["by", "bh", "holm"] = "by"
     pval_sided: Literal["two-sided", "left", "right"] = "two-sided"
+    calculate_one_sided_pval: bool = False
     pseudocount: float = 0.01
     
     # Reporting params

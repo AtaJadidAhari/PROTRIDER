@@ -1,6 +1,6 @@
 # path to output directory to store result files
 #out_dir: /s/project/py_fraser/gtex/output_gtex/Python/Brain
-out_dir: /s/project/py_fraser/output/output_kremer/fraser
+out_dir: /s/project/py_fraser/output/output_kremer/fraser/AE/TEST
 
 # csv input file containing intensities. Columns are samples and rows are proteins.
 input_intensities: "sample_data/protrider_sample_dataset.tsv"
@@ -44,8 +44,8 @@ inj_sd: 1.6
 gs_epochs: 100
 
 ## Model params
-autoencoder_training: False ## when set to false, it returns values after (PCA) initialization without training
-autoencoder_loss: "NLL" # MSE or NLL
+autoencoder_training: True ## when set to false, it returns values after (PCA) initialization without training
+autoencoder_loss: "BBL" # MSE or NLL
 
 n_layers: 1 # number of layers for the autoencoder model
 n_epochs: 100 # number of training epochs
@@ -71,6 +71,7 @@ cross_val: False # run protrider in k-fold cross-validation mode; only implement
 pval_dist: 'bb' # Distribution choice for P-value computation. Options: gaussian, t, nb, bb
 pval_adj: 'holm' # Multiple testing correction. Options: by, bh, holm
 pval_sided: 'two-sided'
+calculate_one_sided_pval: False
 pseudocount: 0.1 # for FC computation (and jaccard)
 min_delta_psi: 0.05  # for fraser jaccard variability filter
 

@@ -127,8 +127,8 @@ class Result:
             self.dataset.split_reads[["seqnames", "start", "end", "width", "strand"]],
             self.dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]],
             ], axis=1)
-        for col in ["seqnames", "strand", "hgnc_symbol", "annotatedJunction"]:
-            junc_meta[col] = junc_meta[col].astype("category")
+        # for col in ["seqnames", "strand", "hgnc_symbol", "annotatedJunction"]:
+        #     junc_meta[col] = junc_meta[col].astype("category")
 
         n_samples = len(self.dataset.sample_ids)
         has_gene = junc_meta['hgnc_symbol'].notna()
@@ -285,21 +285,21 @@ class Result:
             logger.info('=== Saving results in long format ===')
 
             if analysis == 'fraser':
-                log_peak_memory('before building junction-level table')
+                #log_peak_memory('before building junction-level table')
                 all_p = f"{summary_dir}/{analysis}_summary_all_junctions.csv.gz"
                 filtered_p = f"{summary_dir}/{analysis}_summary_filtered_junctions.csv"
                 df_junc_filtered = self.write_fraser_junction_level_table(all_p, filtered_p)
-                log_peak_memory('after building junction-level table')
+                #log_peak_memory('after building junction-level table')
 
                 all_p = f"{summary_dir}/{analysis}_summary_all_genes.csv"
                 filtered_p = f"{summary_dir}/{analysis}_summary_filtered_genes.csv"
                 df_gene_filtered = self.write_fraser_gene_level_table(all_p, filtered_p)
-                log_peak_memory('after building gene-level table')
+                #log_peak_memory('after building gene-level table')
 
                 result = df_junc_filtered
                 del df_gene_filtered
                 gc.collect()
-                log_peak_memory('after freeing gene long table')
+                #log_peak_memory('after freeing gene long table')
 
                 return result
 
@@ -672,7 +672,7 @@ def _run_protrider_standard(
     logger.info('Computing statistics')
     model_input = model if config.analysis != "protrider" else None
     mu, sigma, df0, df_res = fit_residuals(dataset, df_out, model_input, config) # for fraser df_res is N.T
-
+    timer.step('Fitting residuals')
     x_true = dataset.K.T.values if config.analysis == "fraser" else dataset.raw_filtered.values
     pvals, Z = get_pvals(x_true=x_true,
                          res=df_res.values,
@@ -683,16 +683,18 @@ def _run_protrider_standard(
                          theta=theta,
                          dis=config.pval_dist,
                          n_jobs=config.n_jobs)
-    pvals_one_sided, _ = get_pvals(x_true=x_true,
-                                   res=df_res.values,
-                                   mu=mu,
-                                   sigma=sigma,
-                                   df0=df0,
-                                   how='left',
-                                   theta=theta,
-                                   dis=config.pval_dist,
-                                   n_jobs=config.n_jobs)
-    timer.step('Computing p-values and residuals')
+    pvals_one_sided = None
+    if config.calculate_one_sided_pval:
+        pvals_one_sided, _ = get_pvals(x_true=x_true,
+                                    res=df_res.values,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    df0=df0,
+                                    how='left',
+                                    theta=theta,
+                                    dis=config.pval_dist,
+                                    n_jobs=config.n_jobs)
+    timer.step('Computing p-values')
     group_ids = dataset.intron_ranges["hgnc_symbol"] if config.analysis == "fraser" else None
     # TODO make it shorter!
     if isinstance(pvals, pd.DataFrame):
@@ -895,14 +897,16 @@ def _run_protrider_cv(
         df0_list = [df0] * len(df_out)
 
     # Compute one-sided p-values (used for some plots)
-    pvals_one_sided, _ = get_pvals(x_true=dataset.raw_filtered.values,
-                                   res=df_res.values,
-                                   mu=mu,
-                                   sigma=sigma,
-                                   df0=df0 if config.pval_dist == 't' else None,
-                                   how='left',
-                                   dis=config.pval_dist,
-                                   n_jobs=config.n_jobs)
+    pvals_one_sided = None
+    if config.calculate_one_sided_pval:
+        pvals_one_sided, _ = get_pvals(x_true=dataset.raw_filtered.values,
+                                    res=df_res.values,
+                                    mu=mu,
+                                    sigma=sigma,
+                                    df0=df0 if config.pval_dist == 't' else None,
+                                    how='left',
+                                    dis=config.pval_dist,
+                                    n_jobs=config.n_jobs)
 
     group_ids = dataset.intron_ranges["hgnc_symbol"] if config.analysis == "fraser" else None
     # TODO make it shorter!
@@ -937,6 +941,8 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
     mask = dataset.torch_mask
     cov = dataset.covariates
     raw_x = getattr(dataset, "raw_x", None)
+    K_tensor = getattr(dataset, "K_tensor", None)
+    N_tensor = getattr(dataset, "N_tensor", None)
 
     # Move tensors to appropriate device (CPU or original GPU)
     device = "cpu" if use_cpu else orig_device
@@ -951,6 +957,10 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
         cov = cov.to(device)
     if raw_x is not None:
         raw_x = raw_x.to(device)
+    if K_tensor is not None:
+        K_tensor = K_tensor.to(device)
+    if N_tensor is not None:
+        N_tensor = N_tensor.to(device)
 
     model.eval()
     with torch.no_grad():
@@ -975,9 +985,9 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
             X_out = model(X, mask, cond=cov)
             _, rho = model.get_dispersion_parameters()
 
-            loss, reconstruction_loss, bce_loss = criterion( 
-                (rho, torch.exp(X_out) ), 
-                raw_x,
+            loss, reconstruction_loss, bce_loss = criterion(
+                (rho, torch.sigmoid(X_out)),
+                (K_tensor, N_tensor),
                 detached=True
             )
             theta = rho #TODO

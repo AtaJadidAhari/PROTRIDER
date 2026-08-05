@@ -46,7 +46,8 @@ def read(input_intensities: str, index_col: str = None, input_format: str = "pro
             raise ValueError(f"Unsupported file type: {suffixes[-1]}")
         intensities.append(temp_data)
     data = pd.concat(intensities, axis=1)
-    
+
+    omics = '(samples , proteins)' if input_format in ['proteins_as_rows', 'proteins_as_columns'] else ''
     # Transpose if needed to get samples as rows, proteins as columns
     if input_format == "proteins_as_rows":
         data = data.T
@@ -61,7 +62,7 @@ def read(input_intensities: str, index_col: str = None, input_format: str = "pro
     else:
         raise ValueError(f"Invalid input_format: {input_format}. Must be 'proteins_as_rows' or 'proteins_as_columns'")
     
-    logger.info(f'Finished reading raw data with shape: {data.shape} (samples x proteins)')
+    logger.info(f'Finished reading raw data with shape: {data.shape} {omics}')
 
     return data
 

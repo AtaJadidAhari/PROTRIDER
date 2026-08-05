@@ -178,11 +178,13 @@ class OmicAutoencoder(nn.Module): # HAS CHANGED!
             self.dispersion = Dispersion(analysis=model_type)
         
 
-    def set_loss(self, autoencoder_loss = "MSE", lambda_presence_absence = 0.5): 
+    def set_loss(self, autoencoder_loss = "MSE", lambda_presence_absence = 0.5):
         if autoencoder_loss == "MSE":
             return MSEBCELoss(presence_absence=self.presence_absence, lambda_bce= lambda_presence_absence)
         elif autoencoder_loss == "NLL":
             return NegativeBinomialLoss(presence_absence=self.presence_absence, lambda_bce= lambda_presence_absence)
+        elif autoencoder_loss == "BBL":
+            return BetaBinomialLoss(presence_absence=self.presence_absence, lambda_bce=lambda_presence_absence)
     
 
     def forward(self, x, mask, cond=None):
@@ -337,7 +339,7 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
     train_losses = []
     for epoch in tqdm(range(n_epochs)):
         running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
-        logger.debug('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
+        logger.info('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
                                                                           running_reconstruction_loss, running_bce_loss))
         scheduler.step()
         if running_loss < best_loss:
@@ -361,6 +363,9 @@ def _train_iteration(data_loader, model, criterion, optimizer):
             x, mask, cov, omic_means = data
         elif model.model_type == "outrider":
             x, mask, cov, omic_means, raw_x, size_factors = data
+        elif model.model_type == "fraser":
+            x, mask, cov, omic_means, K, N = data
+
 
         # Restore grads and compute model out
         optimizer.zero_grad()
@@ -373,7 +378,12 @@ def _train_iteration(data_loader, model, criterion, optimizer):
             x_pred = torch.exp(x_hat) * size_factors
             loss, reconstruction_loss, bce_loss = criterion((theta, x_pred), raw_x, mask)
         elif model.model_type == "protrider":
-            loss, reconstruction_loss, bce_loss = criterion(x_hat, x, mask) 
+            loss, reconstruction_loss, bce_loss = criterion(x_hat, x, mask)
+
+        elif model.model_type == "fraser":
+            _, rho = model.get_dispersion_parameters()
+            loss, reconstruction_loss, bce_loss = criterion((rho, torch.sigmoid(x_hat)), (K, N))
+
 
         # Adjust learning weights
         loss.backward()
@@ -387,6 +397,10 @@ def _train_iteration(data_loader, model, criterion, optimizer):
                 model.fit_dispersion(raw_x.T, x_pred.T)
                 model.dispersion.clip_theta()
                 _, theta = model.get_dispersion_parameters()
+        elif model.model_type == "fraser":
+            with torch.no_grad():
+                model.fit_dispersion(K.T, N.T, x_hat)
+                model.dispersion.clip_rho()
 
         # Gather data and report
         running_loss += loss.item()
@@ -455,7 +469,80 @@ class NegativeBinomialLoss(nn.Module):
             return (loss.detach().cpu().numpy(),
                     nll.detach().cpu().numpy(),
                     bce_loss.detach().cpu().numpy() if bce_loss is not None else None)
-            
+
+        return loss, nll, bce_loss
+
+
+class BetaBinomialLoss(nn.Module):
+
+    def __init__(self, presence_absence=False, lambda_bce=1.0, eps=0.0):
+        super().__init__()
+        self.presence_absence = presence_absence
+        self.lambda_bce = lambda_bce
+        self.eps = eps
+
+    def forward(self, predictions, targets, mask=None, detached=False):
+        """
+        predictions: tuple of (rho, mu_pred) where:
+            - rho: beta-binomial dispersion (junctions,)
+            - mu_pred: predicted psi/jaccard mean in (0, 1), shape (batch_size x junctions)
+        targets: tuple of (K, N) observed split-read counts and totals, shape (batch_size x junctions)
+        """
+        if isinstance(predictions, tuple):
+            rho, mu_pred = predictions
+        else:
+            raise ValueError("rho must be provided for beta-binomial loss")
+        K, N = targets
+
+        if self.presence_absence:
+            presence = (~mask).double()
+            presence_hat = mu_pred[1]
+            mu_pred = mu_pred[0]
+
+        if not isinstance(rho, torch.Tensor):
+            rho = torch.tensor(rho, dtype=torch.float64, device=mu_pred.device)
+        if rho.dim() == 1:
+            rho = rho.unsqueeze(0)
+
+        eps = self.eps
+        mu = torch.clamp(mu_pred, min=1e-6, max=1 - 1e-6)
+        rho = torch.clamp(rho, min=1e-6, max=1 - 1e-6)
+
+        conc = (1 - rho) / rho
+        alpha = mu * conc
+        beta = (1 - mu) * conc
+
+        log_prob = (
+            torch.lgamma(N + 1 + 2 * eps)
+            - torch.lgamma(K + 1 + eps)
+            - torch.lgamma(N - K + 1 + eps)
+            + torch.lgamma(K + alpha + eps)
+            + torch.lgamma(N - K + beta + eps)
+            - torch.lgamma(N + alpha + beta + 2 * eps)
+            + torch.lgamma(alpha + beta)
+            - torch.lgamma(alpha)
+            - torch.lgamma(beta)
+        )
+        log_prob = torch.nan_to_num(log_prob, nan=0.0, posinf=0.0, neginf=-1e20)
+
+        if mask is not None:
+            log_prob = torch.where(mask, torch.tensor(0.0, device=log_prob.device), log_prob)
+            nll = -log_prob.sum() / (~mask).sum()
+        else:
+            nll = -log_prob.mean()
+
+        if self.presence_absence:
+            bce_loss = F.binary_cross_entropy(torch.sigmoid(presence_hat), presence)
+            loss = nll + self.lambda_bce * bce_loss
+        else:
+            bce_loss = None
+            loss = nll
+
+        if detached:
+            return (loss.detach().cpu().numpy(),
+                    nll.detach().cpu().numpy(),
+                    bce_loss.detach().cpu().numpy() if bce_loss is not None else None)
+
         return loss, nll, bce_loss
 
 

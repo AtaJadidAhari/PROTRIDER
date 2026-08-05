@@ -119,32 +119,65 @@ class FraserDispersion():
         self.mu = torch.clip(self.mu, lower, upper)
 
 
-    def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100):
-        mu = torch.sigmoid(x_pred).T          # (junctions, samples)
-        _, rho_init = self.distribution.init_fit(K, N)
+    # def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100):
+    #     mu = torch.sigmoid(x_pred).T          # (junctions, samples)
+    #     _, rho_init = self.distribution.init_fit(K, N)
 
-        K_np   = K.numpy()#;  N_np = N.numpy()
-        #mu_np  = mu.detach().numpy()           # (junctions, samples)
-        logit_min = np.log(rho_min / (1 - rho_min))
-        logit_max = np.log(rho_max / (1 - rho_max))
+    #     K_np   = K.numpy()#;  N_np = N.numpy()
+    #     #mu_np  = mu.detach().numpy()           # (junctions, samples)
+    #     logit_min = np.log(rho_min / (1 - rho_min))
+    #     logit_max = np.log(rho_max / (1 - rho_max))
 
-        def nll(logit_rho, k, n, m):
-            rho = torch.tensor([[1.0 / (1.0 + np.exp(-logit_rho))]], dtype=torch.float64)
-            return self.distribution.loss(k, n, m, rho).item() + lambda_penalty * logit_rho ** 2
+    #     def nll(logit_rho, k, n, m):
+    #         rho = torch.tensor([[1.0 / (1.0 + np.exp(-logit_rho))]], dtype=torch.float64)
+    #         return self.distribution.loss_penalized(k, n, m, rho, lambda_penalty=lambda_penalty).item()
 
-        rho_final = np.empty(K_np.shape[0])
-        for j in range(K_np.shape[0]):
-            k_j = K[j].unsqueeze(0)    # (1, samples)
-            n_j = N[j].unsqueeze(0)    # (1, samples)
-            mu_j = mu[j].unsqueeze(0)  # (1, samples)
+    #     rho_final = np.empty(K_np.shape[0])
+    #     for j in range(K_np.shape[0]):
+    #         k_j = K[j].unsqueeze(0)    # (1, samples)
+    #         n_j = N[j].unsqueeze(0)    # (1, samples)
+    #         mu_j = mu[j].unsqueeze(0)  # (1, samples)
 
-            res = minimize_scalar(lambda lr: nll(lr, k_j, n_j, mu_j), bounds=(logit_min, logit_max), method='bounded', options={'maxiter': max_iter, 'xatol': 1e-9})
-            rho_j = 1.0 / (1.0 + np.exp(-res.x))
-            rho_final[j] = rho_j if np.isfinite(rho_j) else rho_init[j].item()
+    #         res = minimize_scalar(lambda lr: nll(lr, k_j, n_j, mu_j), bounds=(logit_min, logit_max), method='bounded', options={'maxiter': max_iter, 'xatol': 1e-9})
+    #         rho_j = 1.0 / (1.0 + np.exp(-res.x))
+    #         rho_final[j] = rho_j if np.isfinite(rho_j) else rho_init[j].item()
 
-        self.rho = torch.tensor(rho_final, dtype=torch.float64)
-        self.mu  = mu
-        
+    #     self.rho = torch.tensor(rho_final, dtype=torch.float64)
+    #     self.mu  = mu
+
+    def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100,
+            logit_bound=30.0, tol=1e-7):
+        mu = torch.sigmoid(x_pred).T.to(torch.float64)   # (junctions, samples)
+        K = K.to(torch.float64)                          # (junctions, samples)
+        N = N.to(torch.float64)                          # (junctions, samples)
+        _, rho_init = self.distribution.init_fit(K, N)   # (junctions,)
+
+        logit_min, logit_max = -logit_bound, logit_bound
+
+        logit_rho = torch.logit(rho_init.to(torch.float64).clamp(rho_min, rho_max)).detach()
+
+        for _ in range(max_iter):
+            with torch.enable_grad():
+                logit_rho.requires_grad_(True)
+                rho = torch.sigmoid(logit_rho).unsqueeze(-1)  # (junctions, 1)
+                loss = self.distribution.loss_penalized(K, N, mu, rho, lambda_penalty)  # (junctions,)
+                grad, = torch.autograd.grad(loss.sum(), logit_rho, create_graph=True)
+                hess, = torch.autograd.grad(grad.sum(), logit_rho)
+
+            hess_safe = torch.where(hess > 1e-8, hess, torch.full_like(hess, 1e-8))
+            step = torch.clamp(grad / hess_safe, -5.0, 5.0)
+            logit_rho = (logit_rho - step).detach().clamp(logit_min, logit_max)
+
+            if step.abs().max() < tol:
+                break
+
+        with torch.no_grad():
+            rho_final = torch.sigmoid(logit_rho)
+            rho_final = torch.where(torch.isfinite(rho_final), rho_final, rho_init.to(torch.float64))
+
+        self.rho = rho_final.detach()
+        self.mu = mu
+
 
 class Distribution(): # Do we need this base class?
     #@abc.abstractmethod
@@ -230,7 +263,7 @@ class BetaBinomialDistribution(Distribution):
 
         return mu, rho
 
-    def loss(self, K, N, mu, rho, eps = 0.5):
+    def loss(self, K, N, mu, rho, eps = 0.0):
         """Negative log-likelihood using mu/rho parameterization."""
         K = K.to(torch.float64)
         N = N.to(torch.float64)
@@ -241,23 +274,26 @@ class BetaBinomialDistribution(Distribution):
         beta = (1 - mu) * conc
 
         log_prob = (
-            torch.lgamma(N + 1)
-            - torch.lgamma(K + 1)
-            - torch.lgamma(N - K + 1)
-            + torch.lgamma(K + alpha)
-            + torch.lgamma(N - K + beta)
-            - torch.lgamma(N + alpha + beta)
+            torch.lgamma(N + 1 + 2 * eps)
+            - torch.lgamma(K + 1 + eps)
+            - torch.lgamma(N - K + 1 + eps)
+            + torch.lgamma(K + alpha + eps)
+            + torch.lgamma(N - K + beta + eps)
+            - torch.lgamma(N + alpha + beta + 2 * eps)
             + torch.lgamma(alpha + beta)
             - torch.lgamma(alpha)
             - torch.lgamma(beta)
         )
 
         log_prob = torch.nan_to_num(log_prob, nan=0.0, posinf=0.0, neginf=-1e20)
-        return -torch.mean(log_prob) #Sum to mean?
+        return -torch.mean(log_prob, dim = -1) #Sum to mean?
 
-    def loss_penalized(self, K, N, mu, rho, lambda_penalty = 1e-4): # test
-        """Negative log-likelihood with L2 penalty on rho."""
-        p_rho = nn.Parameter(torch.logit(rho))
-        nll = self.loss(K, N, mu, rho)
-        penalty = lambda_penalty * torch.sum(p_rho**2)
+    def loss_penalized(self, K, N, mu, rho, lambda_penalty = 1e-4):
+        """Negative log-likelihood (per junction) with an L2 penalty on
+        logit(rho), also per junction -- matches the per-row shape
+        returned by loss(), so junctions stay independent (no cross-junction
+        sum) when used elementwise/broadcast over the junction dimension."""
+        nll = self.loss(K, N, mu, rho)              # (junctions,)
+        logit_rho = torch.logit(rho).squeeze(-1)     # (junctions,), match nll's shape
+        penalty = lambda_penalty * logit_rho ** 2
         return nll + penalty

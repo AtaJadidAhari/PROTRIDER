@@ -43,17 +43,16 @@ def fit_residuals(dataset, df_out, model, config):
             mu, theta = model.get_dispersion_parameters() #new
         sigma = theta
 
-    elif config.analysis == "fraser": 
+    elif config.analysis == "fraser":
         sigma = None
         df0 = None
         df_res = dataset.N.T
+        # Refit rho against df_out so mu/rho match the restored best-epoch model, not the last epoch.
+        model.fit_dispersion(torch.tensor(dataset.K.values, dtype=torch.float64),
+                            torch.tensor(dataset.N.values, dtype=torch.float64),
+                            torch.tensor(df_out.values, dtype=torch.float64),
+                            max_iter = config.n_epochs)
         mu, rho = model.get_dispersion_parameters()
-        if mu is None:
-            # Fitting BB for fraser if it is not set yet
-            model.fit_dispersion(torch.tensor(dataset.K.values, dtype=torch.float64), 
-                                torch.tensor(dataset.N.values, dtype=torch.float64),
-                                torch.tensor(df_out.values, dtype=torch.float64)) 
-            mu, rho = model.get_dispersion_parameters()
         sigma = rho
 
     return mu, sigma, df0, df_res

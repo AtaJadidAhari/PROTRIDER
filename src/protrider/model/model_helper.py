@@ -63,7 +63,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
 
         logger.info('\tFitting model')
         
-        loss, reconstruction_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
+        loss, reconstruction_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size, n_jobs=n_jobs)
         logger.info(f'\tFinal loss after model fit: %s, {loss_fn}_loss: %s, bce_loss: %s',
                     loss, reconstruction_loss, bce_loss)
         X_out = model(injected_dataset.X, injected_dataset.torch_mask,
