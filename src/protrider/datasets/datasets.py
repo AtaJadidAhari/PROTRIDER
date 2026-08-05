@@ -53,11 +53,11 @@ class PCADataset(ABC):
 
 
 class ProtriderDataset(Dataset, PCADataset):
-    def __init__(self, input_intensities: str, index_col: str, 
+    def __init__(self, input_intensities: str, index_col: str,
                  sa_file: Optional[str] = None,
                  cov_used: Optional[list] = None, log_func: Callable = np.log,
                  maxNA_filter: float = 0.3, device: torch.device = torch.device('cpu'),
-                 input_format: str = "proteins_as_rows"):
+                 input_format: str = "proteins_as_rows", **kwargs):
         """Initialize ProtriderDataset.
         
         Args:
@@ -196,7 +196,7 @@ class OutriderDataset(Dataset, PCADataset):
                  cov_used: Optional[list] = None, log_func: Callable = np.log,
                  fpkm_cutoff: int = 1, gtf: str = None,
                  device: torch.device = torch.device('cpu'),
-                 input_format: str = "proteins_as_rows"):
+                 input_format: str = "proteins_as_rows", **kwargs):
         super().__init__()
 
         # Read and preprocess protein intensities
@@ -442,7 +442,10 @@ class FraserDataset(Dataset, PCADataset):
                 minExpressionInOneSample , quantile, quantileMinExpression, 
                 pseudocount, min_delta_psi=0.05, sa_file: Optional[str] = None,
                  cov_used: Optional[list] = None, gtf: Optional[str] = None,
+                 device: torch.device = torch.device('cpu'),
                  **kwargs):
+
+        self.device = device
         # read split and unsplit reads
         logger.info("Reading split and unsplit reads")
         self.split_reads = read(input_intensities=split_reads, input_format = 'introns_as_rows') # TODO: index col??
@@ -512,6 +515,9 @@ class FraserDataset(Dataset, PCADataset):
         self.X = self.X + self.omic_means_torch
         self.raw_filtered = self.data
         self.raw_x = torch.tensor(self.raw_filtered.values)
+        # split-read counts (K) and total counts (N), samples x junctions, aligned with X/raw_x
+        self.K_tensor = torch.tensor(self.K.T.values, dtype=torch.float64)
+        self.N_tensor = torch.tensor(self.N.T.values, dtype=torch.float64)
         self.intron_ranges = pd.DataFrame({
             "Chromosome": self.split_reads["seqnames"],
             "StartId": self.split_reads["startID"],
@@ -546,8 +552,21 @@ class FraserDataset(Dataset, PCADataset):
             self.covariates = torch.empty(self.data.shape[0], 0)
             self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
 
+        ### Send data to cpu/gpu device
+        self.X = self.X.to(device)
+        self.torch_mask = self.torch_mask.to(device)
+        self.covariates = self.covariates.to(device)
+        self.omic_means_torch = self.omic_means_torch.to(device)
+        self.raw_x = self.raw_x.to(device)
+        self.K_tensor = self.K_tensor.to(device)
+        self.N_tensor = self.N_tensor.to(device)
+
+    def __len__(self):
+        return len(self.X)
+
     def __getitem__(self, idx):
-        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, self.raw_x[idx])
+        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, 
+                 self.K_tensor[idx], self.N_tensor[idx])
 
     def calculate_K(self):
         return self.split_reads[self.sample_ids]

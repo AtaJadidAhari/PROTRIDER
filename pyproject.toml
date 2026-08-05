@@ -28,6 +28,7 @@ dependencies = [
     'pydeseq2',
     'scipy',
     'scikit-learn',
+    'joblib',
     'pathlib',
     'seaborn',
     'plotnine',

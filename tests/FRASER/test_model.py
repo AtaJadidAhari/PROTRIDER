@@ -1,85 +1,51 @@
-# from protrider.config import load_config
-# from protrider.model.model_helper import find_latent_dim, init_model
-# from protrider.pipeline import _inference
-# from protrider.stats import fit_residuals
-# import pandas as pd
-# import numpy as np
+import numpy as np
+import torch
 
-# def test_best_latent_dim(fraser_dataset, config_path): #makeSimulatedFraserDataSet -> to test function correctness
-#     config = load_config(config_path)
-#     q = find_latent_dim(fraser_dataset, method=config.find_q_method,
-#                         # Params for grid search method
-#                         inj_freq=config.inj_freq,
-#                         inj_mean=config.inj_mean,
-#                         inj_sd=config.inj_sd,
-#                         init_wPCA=config.init_pca,
-#                         n_layers=config.n_layers,
-#                         h_dim=config.h_dim,
-#                         n_epochs=config.gs_epochs if config.gs_epochs else config.n_epochs,
-#                         learning_rate=config.lr,
-#                         batch_size=config.batch_size,
-#                         pval_sided=config.pval_sided,
-#                         pval_dist=config.pval_dist,
-#                         out_dir=config.out_dir,
-#                         device=config.device_torch,
-#                         presence_absence=config.presence_absence,
-#                         lambda_bce=config.lambda_presence_absence,
-#                         model_type=config.analysis,
-#                         loss_fn=config.autoencoder_loss,
-#                         n_jobs=config.n_jobs,
-#                         )
-#     assert isinstance(q, int), "q should be an integer"
-#     assert q > 1, "q should be greater than 1"
-#     assert q <= len(fraser_dataset.sample_ids), "q should be less than or equal to the number of samples"
-#     assert q <= fraser_dataset.X.shape[1], "q should be less than or equal to the number of junctions"
+from protrider.model.model_helper import init_model
+from protrider.pipeline import _inference
 
-# def test_model_architecture(fraser_dataset, config_path, q):
-#     pass #TODO
-
-# def test_model_output(fraser_dataset, config_path, q):
-#     config = load_config(config_path)
-
-#     n_samples  = len(fraser_dataset.sample_ids)
-#     n_junctions = fraser_dataset.split_reads.shape[0]
-
-#     model = init_model(fraser_dataset, q,
-#                        init_wPCA=config.init_pca,
-#                        n_layer=config.n_layers,
-#                        h_dim=config.h_dim,
-#                        device=config.device_torch,
-#                        presence_absence=config.presence_absence if config.n_layers == 1 else False,
-#                        model_type="fraser"
-#                        )
-#     criterion = model.set_loss(autoencoder_loss = config.autoencoder_loss, lambda_presence_absence = config.lambda_presence_absence) 
-#     df_out, theta, _, init_loss, init_mse_loss, _ = _inference(fraser_dataset, model, criterion, batch_size=config.batch_size) 
+# FRASER-R's config for this dataset used implementation='PCA' with useOHTtoObtainQ=true,
+# which resolves to q=2 for these 10 samples (dataset.find_enc_dim_optht()).
+Q = 2
 
 
-#     assert model is not None, "Model should be initialized successfully"
-#     assert isinstance(df_out, pd.DataFrame), "Model output should be a DataFrame"
-#     assert np.isfinite(df_out.values).all(), "Model output should not contain NaN or infinite values"
-#     assert df_out.shape == fraser_dataset.centered_log_data_noNA.T.shape, "Output shape should be samples x junctions"
+def test_init_model_pca_reconstruction_matches_r_predicted_means(fraser_dataset_unfiltered, r_predicted_means):
+    """FRASER-R's fitPCA (implementation='PCA', subset=FALSE) fits a single-pass PCA:
+    E = D = top-q loadings of the centered logit matrix, b = per-junction mean of the raw
+    logit matrix, predicted mu = sigmoid(H @ D.T + b). Our init_model(init_wPCA=True,
+    n_layers=1) with a fresh (untrained) inference pass performs exactly this reconstruction,
+    so its output should match FRASER-R's exported predicted_means.csv almost exactly."""
+    ds = fraser_dataset_unfiltered
+    model = init_model(ds, Q, init_wPCA=True, n_layer=1, h_dim=None,
+                        device=torch.device("cpu"), presence_absence=False, model_type="fraser")
+    criterion = model.set_loss(autoencoder_loss="NLL", lambda_presence_absence=0.5)
 
-#     #TODO
-#     assert theta is not None, "theta must not be None for fraser"
-#     assert theta.shape == (n_junctions,), f"theta shape {theta.shape} != ({n_junctions},)"
-#     assert ((theta > 0) & (theta < 1)).all(), "theta must be in (0, 1)"
+    df_out, theta, df_presence, loss, mse, bce = _inference(ds, model, criterion, batch_size=None)
+    mu_pred = torch.sigmoid(torch.tensor(df_out.values)).numpy()  # samples x junctions
 
-#     assert np.isfinite(init_loss), "Initial loss should be finite"
-#     assert np.isfinite(init_mse_loss), "Initial MSE loss should be finite"
-#     assert init_loss > 0 , "Initial loss should be greater than 0"
+    pm_ref = r_predicted_means[ds.sample_ids.tolist()].values.T  # -> samples x junctions, same row order as K.tsv
 
-# def test_fit_residuals(fraser_dataset, config_path, df_out, model):
-#     config = load_config(config_path)
-#     n_junctions = fraser_dataset.split_reads.shape[0]
-#     n_samples   = len(fraser_dataset.sample_ids)
-#     mu, rho, _, _ = fit_residuals(fraser_dataset, df_out, model, config)
+    np.testing.assert_allclose(mu_pred, pm_ref, atol=1e-8)
 
-#     assert mu is not None, "mu should not be None"
-#     assert mu.shape == (n_junctions, n_samples), f"mu shape {mu.shape} != ({n_junctions}, {n_samples})"
-#     assert np.isfinite(mu).all(), "mu should not contain NaN or infinite values"
-#     assert (mu > 0).all() and (mu < 1).all(), "mu should be in (0, 1)"
 
-#     assert rho is not None, "rho should not be None"
-#     assert rho.shape == (n_junctions,), f"rho shape {rho.shape} != ({n_junctions},)"
-#     assert np.isfinite(rho).all(), "rho should not contain NaN or infinite values"
-#     assert (rho > 0).all() and (rho < 1).all(), "rho should be in (0, 1) for Beta-Binomial distribution"
+def test_dispersion_fit_correlates_with_r_rho(fraser_dataset_unfiltered, r_rho):
+    """R's updateRho() and our FraserDispersion.fit() both fit a Beta-Binomial dispersion per
+    junction via numerical optimization, but with different objectives/regularization, so an
+    exact match isn't expected. It should still be strongly correlated with FRASER-R's rho.csv,
+    fit on the same (mu, K, N)."""
+    ds = fraser_dataset_unfiltered
+    model = init_model(ds, Q, init_wPCA=True, n_layer=1, h_dim=None,
+                        device=torch.device("cpu"), presence_absence=False, model_type="fraser")
+    criterion = model.set_loss(autoencoder_loss="NLL", lambda_presence_absence=0.5)
+    df_out, theta, df_presence, loss, mse, bce = _inference(ds, model, criterion, batch_size=None)
+
+    model.fit_dispersion(
+        torch.tensor(ds.K.values, dtype=torch.float64),
+        torch.tensor(ds.N.values, dtype=torch.float64),
+        torch.tensor(df_out.values, dtype=torch.float64),
+        max_iter=100,
+    )
+    _, rho_fit = model.get_dispersion_parameters()
+
+    corr = np.corrcoef(rho_fit, r_rho.values.squeeze())[0, 1]
+    assert corr >= 0.6, f"Fitted rho should correlate with FRASER-R's rho.csv, got corr={corr:.3f}"

@@ -1,44 +1,27 @@
-# from protrider.config import load_config
-# from protrider.stats import get_pvals, get_pvals_by_gene, adjust_pvals
-# import pandas as pd
-# import numpy as np
+import numpy as np
 
-# def test_pvals(fraser_dataset, config_path, rho, mu):
-#     config = load_config(config_path)
-#     pvals, z = get_pvals(x_true=fraser_dataset.K.values.T,
-#                          res=fraser_dataset.N.values.T,
-#                          mu=mu,
-#                          sigma=rho,
-#                          df0=None,
-#                          how='two-sided',
-#                          theta=None,
-#                          dis='bb',
-#                          n_jobs=config.n_jobs)
-#     pvals_df = pd.DataFrame(pvals).T
-#     assert pvals_df.shape == fraser_dataset.centered_log_data_noNA.T.shape, f"pvals shape {pvals_df.shape} != {fraser_dataset.centered_log_data_noNA.T.shape}"
-#     finite = pvals_df.values[np.isfinite(pvals_df.values)]
-#     assert (finite >= 0).all() and (finite <= 1).all(), "p-values must be in [0, 1]"
-#     assert np.isfinite(pvals_df.values).any(), "p-values should not be all NaN or infinite"
-#     assert pvals.shape == z.shape, f"pvals shape {pvals.shape} != z shape {z.shape}"
-
-# def test_pvals_by_gene(fraser_dataset, pvals):
-#     pvals_by_gene = get_pvals_by_gene(pvals, fraser_dataset.intron_ranges["hgnc_symbol"])
-#     assert isinstance(pvals_by_gene, pd.DataFrame), "pvals_by_gene should be a DataFrame"
-#     assert pvals_by_gene.shape == pvals.shape, f"pvals_by_gene shape {pvals_by_gene.shape} != pvals shape {pvals.shape}"
-#     finite = np.isfinite(pvals.values.astype(float)) & np.isfinite(pvals_by_gene.values.astype(float))
-#     assert (pvals_by_gene.values[finite] <= pvals.values[finite] + 1e-9).all(), "gene-min p-values must be ≤ raw p-values"
+from protrider.stats import get_pvals, adjust_pvals
 
 
-# def test_adjust_pvals(fraser_dataset, pvals):
-#     adjusted_pvals = adjust_pvals(pvals, method='holm', group_ids=fraser_dataset.intron_ranges["hgnc_symbol"])
-#     assert isinstance(adjusted_pvals, pd.DataFrame), "adjusted_pvals should be a DataFrame"
-#     assert adjusted_pvals.shape == pvals.shape, f"adjusted_pvals shape {adjusted_pvals.shape} != pvals shape {pvals.shape}"
-#     finite = np.isfinite(adjusted_pvals.values) & np.isfinite(pvals.values)
-#     assert (adjusted_pvals.values[finite] >= pvals.values[finite] - 1e-9).all(), "adjusted p-values must be ≥ raw p-values"
-#     finite = adjusted_pvals.values[np.isfinite(adjusted_pvals.values)]
-#     assert (finite >= 0).all() and (finite <= 1).all(), "adjusted p-values must be in [0, 1]"
+def test_get_pvals_bb_matches_r_reference(r_K, r_N, r_predicted_means, r_rho, r_pvals):
+    """Feed FRASER-R's own fitted mu (predicted_means.csv) and rho (rho.csv) into our
+    get_pv_bb implementation and compare the resulting p-values against R's pVals.csv.
+    This isolates the beta-binomial p-value formula from any autoencoder training randomness."""
+    sample_ids = r_predicted_means.columns.tolist()
+    x_true = r_K[sample_ids].values.T  # samples x junctions
+    res = r_N[sample_ids].values.T
 
-# def test_delta_psi(fraser_dataset):
-#     delta = fraser_dataset.get_delta_psi()
-#     finite = np.asarray(delta, dtype=float)[np.isfinite(np.asarray(delta, dtype=float))]
-#     assert (finite > -1).all() and (finite < 1).all(), "delta_psi values must be in (-1, 1)"
+    pvals, z = get_pvals(x_true=x_true, res=res, mu=r_predicted_means.values, sigma=r_rho.values.squeeze(),
+                          df0=None, how="two-sided", theta=None, dis="bb", n_jobs=1)
+
+    assert z is None, "Beta-Binomial p-values do not produce z-scores"
+    np.testing.assert_allclose(pvals.T, r_pvals.values, atol=1e-6, equal_nan=True)
+
+
+def test_adjust_pvals_holm_matches_r_reference(r_annotations, r_pvals, r_pvals_adj):
+    """Feed R's own raw p-values (pVals.csv) into our adjust_pvals(method='holm', aggregate=True)
+    and compare the junction-level Holm-adjusted p-values against R's pValsAdj.csv."""
+    _ , gene_level_info = adjust_pvals(r_pvals, method="holm", group_ids=r_annotations["hgnc_symbol"], aggregate=True, n_jobs=1)
+
+    junction_pvals_adj = gene_level_info["junction_pvals_adj"]
+    np.testing.assert_allclose(junction_pvals_adj.values, r_pvals_adj.values, atol=1e-4, equal_nan=True)
