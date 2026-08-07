@@ -34,7 +34,11 @@ dependencies = [
     'plotnine',
     'pyarrow',
     'fastparquet',
-    'pyranges'
+    'pyranges',
+    'h5py',
+    'rds2py',
+    'matplotlib',
+    'statsmodels'
 ]
 
 [project.urls]

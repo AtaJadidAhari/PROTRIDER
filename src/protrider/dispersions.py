@@ -119,32 +119,6 @@ class FraserDispersion():
         self.mu = torch.clip(self.mu, lower, upper)
 
 
-    # def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100):
-    #     mu = torch.sigmoid(x_pred).T          # (junctions, samples)
-    #     _, rho_init = self.distribution.init_fit(K, N)
-
-    #     K_np   = K.numpy()#;  N_np = N.numpy()
-    #     #mu_np  = mu.detach().numpy()           # (junctions, samples)
-    #     logit_min = np.log(rho_min / (1 - rho_min))
-    #     logit_max = np.log(rho_max / (1 - rho_max))
-
-    #     def nll(logit_rho, k, n, m):
-    #         rho = torch.tensor([[1.0 / (1.0 + np.exp(-logit_rho))]], dtype=torch.float64)
-    #         return self.distribution.loss_penalized(k, n, m, rho, lambda_penalty=lambda_penalty).item()
-
-    #     rho_final = np.empty(K_np.shape[0])
-    #     for j in range(K_np.shape[0]):
-    #         k_j = K[j].unsqueeze(0)    # (1, samples)
-    #         n_j = N[j].unsqueeze(0)    # (1, samples)
-    #         mu_j = mu[j].unsqueeze(0)  # (1, samples)
-
-    #         res = minimize_scalar(lambda lr: nll(lr, k_j, n_j, mu_j), bounds=(logit_min, logit_max), method='bounded', options={'maxiter': max_iter, 'xatol': 1e-9})
-    #         rho_j = 1.0 / (1.0 + np.exp(-res.x))
-    #         rho_final[j] = rho_j if np.isfinite(rho_j) else rho_init[j].item()
-
-    #     self.rho = torch.tensor(rho_final, dtype=torch.float64)
-    #     self.mu  = mu
-
     def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100,
             logit_bound=30.0, tol=1e-7):
         mu = torch.sigmoid(x_pred).T.to(torch.float64)   # (junctions, samples)
