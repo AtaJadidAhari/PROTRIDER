@@ -529,11 +529,9 @@ class FraserDataset(Dataset, PCADataset):
 
         # Annotate junctions with gene symbols if a GTF file is provided
         if gtf is not None:
-            try:
-                logger.info("Annotating junctions with GTF.")
-                self.annotate_junctions(gtf)
-            except Exception as e:
-                logger.warning(f"Junction annotation failed: {e}. Proceeding without annotation.")
+            logger.info("Annotating junctions with GTF.")
+            self.annotate_junctions(gtf)
+            
 
         # Input and output of autoencoder is:
         # uncentered data without NaNs, replacing NANs with means
