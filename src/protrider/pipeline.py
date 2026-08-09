@@ -589,8 +589,8 @@ def _run_protrider_standard(
     # 1. Initialize dataset
     logger.info('Initializing dataset')
     dataset  = OmicDataset(analysis=config.analysis,
-                           split_reads=[config.split_reads], 
-                           unsplit_reads=[config.unsplit_reads],
+                           split_reads=config.split_reads,
+                           unsplit_reads=config.unsplit_reads,
                             minExpressionInOneSample = config.min_expression_in_one_sample, 
                             quantile = config.quantile_for_filtering,
                             quantileMinExpression = config.quantile_min_expression,

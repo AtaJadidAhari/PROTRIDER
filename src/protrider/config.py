@@ -30,8 +30,8 @@ class ProtriderConfig:
     sample_annotation: Optional[str] = None  # File path or None
 
     # FRASER
-    split_reads: Optional[str] = None
-    unsplit_reads: Optional[str] = None
+    split_reads: Optional[Union[str, List[str]]] = None  # File path or a list of at most 2 paths
+    unsplit_reads: Optional[Union[str, List[str]]] = None  # File path or a list of at most 2 paths
     delta_psi_threshold: float = 0.3
     min_count: int = 5
     min_expression_in_one_sample: int = 20
@@ -114,6 +114,18 @@ class ProtriderConfig:
             raise ValueError(
                 "input_intensities must be a string or a list of strings"
             )
+
+        # Normalize split_reads/unsplit_reads to List[str] (at most 2 files each)
+        for field_name in ("split_reads", "unsplit_reads"):
+            value = getattr(self, field_name)
+            if isinstance(value, str):
+                value = [value]
+                setattr(self, field_name, value)
+            elif value is not None and not isinstance(value, list):
+                raise ValueError(f"{field_name} must be a string or a list of strings")
+            if value is not None and len(value) > 2:
+                raise ValueError(f"{field_name} supports at most 2 files, got {len(value)}")
+
         # Validation
         if self.max_allowed_NAs_per_protein < 0 or self.max_allowed_NAs_per_protein > 1:
             raise ValueError("max_allowed_NAs_per_protein must be between 0 and 1")
