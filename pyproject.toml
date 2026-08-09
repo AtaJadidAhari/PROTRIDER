@@ -19,7 +19,7 @@ keywords = ["olink", "tools", "ukb", "outliers"]
 dependencies = [
     'click',
     'numpy',
-    'pandas',
+    'pandas==2.3.3',
     'pyaml',
     'pathlib',
     'torch',

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, Optional, Callable
+from typing import Iterable, Optional, Callable, Union, List
 from warnings import filters
 #from dpath import values
 import numpy as np
@@ -11,7 +11,7 @@ from abc import ABC
 from optht import optht
 import logging
 from .covariates import parse_covariates
-from .protein_intensities import read, preprocess_protein_intensities
+from .protein_intensities import read, preprocess_protein_intensities, merge_split_reads, merge_unsplit_reads
 from pydeseq2.preprocessing import deseq2_norm
 import pandas as pd
 import re
@@ -438,8 +438,8 @@ class OmicDataset(Dataset):
         pass
 
 class FraserDataset(Dataset, PCADataset): 
-    def __init__(self, split_reads: str, unsplit_reads: str,
-                minExpressionInOneSample , quantile, quantileMinExpression, 
+    def __init__(self, split_reads: Union[str, List[str]], unsplit_reads: Union[str, List[str]],
+                minExpressionInOneSample , quantile, quantileMinExpression,
                 pseudocount, min_delta_psi=0.05, sa_file: Optional[str] = None,
                  cov_used: Optional[list] = None, gtf: Optional[str] = None,
                  device: torch.device = torch.device('cpu'),
@@ -448,8 +448,17 @@ class FraserDataset(Dataset, PCADataset):
         self.device = device
         # read split and unsplit reads
         logger.info("Reading split and unsplit reads")
-        self.split_reads = read(input_intensities=split_reads, input_format = 'introns_as_rows') # TODO: index col??
-        self.unsplit_reads = read(input_intensities=unsplit_reads, input_format = 'introns_as_rows')  # TODO: index col??
+        if len(split_reads) > 2 or len(unsplit_reads) > 2:
+            raise ValueError("At most two split_reads/unsplit_reads files are supported.")
+        sr = [read(input_intensities=[p], input_format='introns_as_rows') for p in split_reads] # TODO: index col??
+        ur = [read(input_intensities=[p], input_format='introns_as_rows') for p in unsplit_reads]  # TODO: index col??
+        if len(sr) == 2:
+            logger.info("Merging two split/unsplit read files")
+            self.split_reads, id_mapping = merge_split_reads(sr, unsplit_reads_1=ur[0])
+            self.unsplit_reads = merge_unsplit_reads(ur, id_mapping)
+        else:
+            self.split_reads, self.unsplit_reads = sr[0], ur[0]
+            
         self.unsplit_reads.columns = self.unsplit_reads.columns.str.lstrip("X") # ONLY for batch file
         self.sample_ids = self.split_reads.columns.intersection(self.unsplit_reads.columns) 
         logger.info(f"Number of samples in the dataset: {len(self.sample_ids)}")
@@ -499,9 +508,9 @@ class FraserDataset(Dataset, PCADataset):
         logger.info(f"Junctions passing variability filter: {self.passed_variability.sum()} / {len(self.passed_variability)}")
 
 
-        self.data = pd.DataFrame(self.data, index=self.sample_ids, columns=self.split_reads.index)
-        
-        X =  torch.tensor(self.data.to_numpy(), dtype=torch.float64)
+        self.data = pd.DataFrame(self.data, index=self.sample_ids, columns=self.split_reads.index).astype(np.float32)
+
+        X =  torch.tensor(self.data.to_numpy(), dtype=torch.float32)
         self.X = X - torch.nanmean(X, dim=0, keepdim=True)
         del X
 
@@ -511,13 +520,13 @@ class FraserDataset(Dataset, PCADataset):
         self.torch_mask = torch.tensor(self.mask)
         self.centered_log_data_noNA = self.X.cpu().numpy()
         self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
-        self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
+        self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0).float()
         self.X = self.X + self.omic_means_torch
         self.raw_filtered = self.data
         self.raw_x = torch.tensor(self.raw_filtered.values)
         # split-read counts (K) and total counts (N), samples x junctions, aligned with X/raw_x
-        self.K_tensor = torch.tensor(self.K.T.values, dtype=torch.float64)
-        self.N_tensor = torch.tensor(self.N.T.values, dtype=torch.float64)
+        self.K_tensor = torch.tensor(self.K.T.values, dtype=torch.float32)
+        self.N_tensor = torch.tensor(self.N.T.values, dtype=torch.float32)
         self.intron_ranges = pd.DataFrame({
             "Chromosome": self.split_reads["seqnames"],
             "StartId": self.split_reads["startID"],
@@ -540,8 +549,8 @@ class FraserDataset(Dataset, PCADataset):
         if sa_file is not None and cov_used is not None:
             try:
                 self.covariates, self.centered_covariates_noNA = parse_covariates(sa_file, cov_used, self.data.index)
-                self.covariates = torch.from_numpy(self.covariates)
-                self.centered_covariates_noNA = torch.from_numpy(self.centered_covariates_noNA)
+                self.covariates = torch.from_numpy(self.covariates).float()
+                self.centered_covariates_noNA = torch.from_numpy(self.centered_covariates_noNA).float()
             except ValueError:
                 logger.warning("No valid covariates found after parsing.")
                 self.covariates = torch.empty(self.data.shape[0], 0)
@@ -563,7 +572,7 @@ class FraserDataset(Dataset, PCADataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, 
+        return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch,
                  self.K_tensor[idx], self.N_tensor[idx])
 
     def calculate_K(self):
