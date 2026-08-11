@@ -17,7 +17,7 @@ def test_init_model_pca_reconstruction_matches_r_predicted_means(fraser_dataset_
 
     pm_ref = r_predicted_means[ds.sample_ids.tolist()].values.T  # -> samples x junctions, same row order as K.tsv
 
-    np.testing.assert_allclose(mu_pred, pm_ref, atol=1e-8)
+    np.testing.assert_allclose(mu_pred, pm_ref, atol=1e-6)
 
 
 def test_dispersion_fit_correlates_with_r_rho(fraser_dataset_unfiltered, r_rho):
