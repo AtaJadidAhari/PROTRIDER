@@ -239,9 +239,10 @@ class Result:
             logger.info(f"Saved residuals to {out_p}")
 
             # presence probabilities
-            out_p = f'{out_dir}/presence_probs.csv'
-            self.df_presence.T.to_csv(out_p, header=True, index=True)
-            logger.info(f"Saved presence probabilities to {out_p}")
+            if self.df_presence is not None:
+                out_p = f'{out_dir}/presence_probs.csv'
+                self.df_presence.T.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved presence probabilities to {out_p}")
 
             # p-values
             out_p = f'{out_dir}/pvals.csv'
@@ -249,9 +250,10 @@ class Result:
             logger.info(f"Saved P-values to {out_p}")
 
             # left-sided p-values
-            out_p = f'{out_dir}/pvals_one_sided.csv'
-            self.df_pvals_one_sided.T.to_csv(out_p, header=True, index=True)
-            logger.info(f"Saved left-sided P-values to {out_p}")
+            if self.df_pvals_one_sided is not None:
+                out_p = f'{out_dir}/pvals_one_sided.csv'
+                self.df_pvals_one_sided.T.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved left-sided P-values to {out_p}")
 
             # p-values adj
             out_p = f'{out_dir}/pvals_adj.csv'
