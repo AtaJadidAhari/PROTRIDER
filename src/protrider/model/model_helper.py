@@ -63,7 +63,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
 
         logger.info('\tFitting model')
         
-        loss, reconstruction_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size, n_jobs=n_jobs)
+        loss, reconstruction_loss, bce_loss, _ = train(injected_dataset, model, criterion, n_epochs, learning_rate, batch_size)
         logger.info(f'\tFinal loss after model fit: %s, {loss_fn}_loss: %s, bce_loss: %s',
                     loss, reconstruction_loss, bce_loss)
         X_out = model(injected_dataset.X, injected_dataset.torch_mask,
@@ -208,7 +208,7 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
                                  omic_means=None if init_wPCA else dataset.omic_means_torch,
                                  presence_absence=presence_absence, model_type=model_type)
 
-    if model_type == "outrider": #TODO  FRASER
+    if model_type == "outrider":
         model.dispersion.set_dispersion(model.dispersion.distribution.init_train(dataset.X.T)[1])  #NEW
     elif model_type == "fraser":
         K_torch = torch.tensor(dataset.K.values, dtype=torch.float64, device=device)

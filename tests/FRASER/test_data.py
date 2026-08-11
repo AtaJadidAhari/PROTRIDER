@@ -3,8 +3,6 @@ import pandas as pd
 
 
 def test_K_and_N_match_r_reference(fraser_dataset, r_K, r_N):
-    """K and N computed from the raw read files must match the R-exported reference exactly
-    (before any expression/variability filtering is applied)."""
     sample_ids = list(fraser_dataset.sample_ids)
     r_K_vals = r_K[sample_ids].values
     r_N_vals = r_N[sample_ids].values
@@ -20,22 +18,16 @@ def test_K_and_N_match_r_reference(fraser_dataset, r_K, r_N):
 
 
 def test_expression_filter_matches_r_reference(fraser_dataset, r_annotations):
-    """passed_expression must match FRASER-R's own 'passedExpression' column exactly, using the
-    same thresholds (min expr in one sample=20, quantile=0.95, quantileMinExpression=10)."""
     np.testing.assert_array_equal(fraser_dataset.passed_expression, r_annotations["passedExpression"].to_numpy())
 
 
 def test_final_filter_count_matches_r_reference(fraser_dataset, r_annotations):
-    """The number of junctions surviving expression+variability filtering must match FRASER-R
-    (min_delta_psi=0.05)."""
     n_junctions_filtered = len(fraser_dataset.split_reads)
     n_passed_r = int(r_annotations["passed"].sum())
     assert n_junctions_filtered == n_passed_r
 
 
 def test_logit_transform_matches_r_reference(r_K, r_N, r_x):
-    """dataset.create_data()'s formula, logit((K+pc)/(N+2pc)) centered per junction, must match
-    FRASER-R's exported x.csv (computed on the full, unfiltered junction set)."""
     sample_ids = r_x.index.tolist()
 
     pseudocount = 0.1
