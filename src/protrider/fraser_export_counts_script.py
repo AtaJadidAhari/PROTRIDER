@@ -103,8 +103,11 @@ def _read_hdf5_assay(fds_dir, assay_name, n_features=None):
     dimnames group when available (".<assay>_dimnames" key "2") instead of
     synthetic labels, so columns match a reference R export's real sample IDs.
     """
-    candidates = glob.glob(os.path.join(fds_dir, f"{assay_name}*.h5")) \
+    exact_match = os.path.join(fds_dir, f"{assay_name}.h5")
+    candidates = [exact_match] if os.path.exists(exact_match) else (
+        glob.glob(os.path.join(fds_dir, f"{assay_name}*.h5")) \
         or glob.glob(os.path.join(fds_dir, "*.h5"))
+    )
     if not candidates:
         raise FileNotFoundError(f"No .h5 file found for assay '{assay_name}' in {fds_dir}")
 

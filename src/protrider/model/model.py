@@ -158,7 +158,7 @@ class ConditionalEnDecoder(nn.Module):
 ### decoder:(h+cov) x g
 ### output: s x g
 
-class OmicAutoencoder(nn.Module): # HAS CHANGED!
+class OmicAutoencoder(nn.Module):
     def __init__(self, in_dim, latent_dim, n_layers=1, n_cov=0, h_dim=None,
                  omic_means=None, presence_absence=False, model_type="protrider"):
         super().__init__()
@@ -210,7 +210,7 @@ class OmicAutoencoder(nn.Module): # HAS CHANGED!
         Vt_q = torch.from_numpy(Vt_q).to(device) # (q, n_prots)
 
         ## ENCODER weights: (q, n_prots + n_cov), bias: (q)
-        cov_enc_init = self.encoder.model.weight.data[:, 0:n_cov]
+        cov_enc_init = self.encoder.model.weight.data[:, 0:n_cov] # TODO [:, -n_cov:]????
         self.encoder.model.weight.data.copy_(
             torch.cat([Vt_q.to(device),
                        cov_enc_init.to(device)], axis=1)
@@ -218,7 +218,7 @@ class OmicAutoencoder(nn.Module): # HAS CHANGED!
 
         if self.model_type == "outrider":
             self.encoder.model.bias.data.copy_(0)
-        elif self.model_type == "protrider" or self.model_type == "fraser": #TODO check in R
+        elif self.model_type == "protrider" or self.model_type == "fraser":
             self.encoder.model.bias.data.copy_(-(Vt_q @ torch.from_numpy(omic_means).to(device).T).flatten())
 
         ## DECODER weights: (n_prots, q + n_cov), bias: (n_prot)
@@ -232,7 +232,7 @@ class OmicAutoencoder(nn.Module): # HAS CHANGED!
     def update_dispersion(self, x_true, x_pred):
         self.dispersion.update(x_true, x_pred)
 
-    def fit_dispersion(self,*args, **kwargs): #NEW    
+    def fit_dispersion(self,*args, **kwargs): 
         self.dispersion.fit(*args, **kwargs)
 
 

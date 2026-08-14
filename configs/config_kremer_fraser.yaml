@@ -1,11 +1,11 @@
 # path to output directory to store result files
 #out_dir: /s/project/py_fraser/gtex/output_gtex/Python/Brain
-out_dir: /s/project/py_fraser/output/output_kremer/fraser/AE/TEST
+out_dir: /s/project/py_fraser/output/output_kremer/fraser/split
 
 # csv input file containing intensities. Columns are samples and rows are proteins.
 input_intensities: "sample_data/protrider_sample_dataset.tsv"
-split_reads: "/s/project/py_fraser/exported_counts/fraser8653/raw-local-fraser_s.csv"
-unsplit_reads: "/s/project/py_fraser/exported_counts/fraser8653/raw-local-fraser_u.csv"
+split_reads: ["/s/project/py_fraser/exported_counts/fraser8653/subsets/raw-local-subset1_s.csv","/s/project/py_fraser/exported_counts/fraser8653/subsets/raw-local-subset2_s.csv"]
+unsplit_reads: ["/s/project/py_fraser/exported_counts/fraser8653/subsets/raw-local-subset1_u.csv","/s/project/py_fraser/exported_counts/fraser8653/subsets/raw-local-subset2_u.csv"]
 
 # column name in the input file indicating the column name containing the protein names/IDs
 #index_col: "protein_ID"
@@ -44,7 +44,7 @@ inj_sd: 1.6
 gs_epochs: 100
 
 ## Model params
-autoencoder_training: True ## when set to false, it returns values after (PCA) initialization without training
+autoencoder_training: False ## when set to false, it returns values after (PCA) initialization without training
 autoencoder_loss: "BBL" # MSE or NLL
 
 n_layers: 1 # number of layers for the autoencoder model

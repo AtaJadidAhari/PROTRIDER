@@ -992,7 +992,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
                 (K_tensor, N_tensor),
                 detached=True
             )
-            theta = rho #TODO
+            theta = rho 
 
         # Presence/Absence extension
         df_presence = None

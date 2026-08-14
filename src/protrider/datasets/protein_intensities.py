@@ -162,6 +162,12 @@ def merge_split_reads(split_reads: list, unsplit_reads_1: pd.DataFrame = None):
 
     id_mapping = {}
 
+    if not sr2_matched.empty:
+        match_id_map = sr2_matched[join_on + id_cols].merge(split_reads_1[join_on + id_cols], on=join_on, how="left", suffixes=("_2", "_1"))
+        for col in id_cols:
+            for old_val, new_val in zip(match_id_map[f"{col}_2"], match_id_map[f"{col}_1"]):
+                id_mapping[old_val] = new_val
+
     # Step 2: build new rows for unmatched split_reads_2 rows
     if not sr2_unmatched.empty:
         new_rows = pd.DataFrame(0, index=sr2_unmatched.index, columns=merged.columns)
@@ -185,7 +191,7 @@ def merge_split_reads(split_reads: list, unsplit_reads_1: pd.DataFrame = None):
             new_vals = []
             for val in new_rows[col]:
                 if val in id_mapping:
-                    new_val = id_mapping[val]  # already resolved (e.g. seen as startID and endID)
+                    new_val = id_mapping[val]  # already resolved 
                 elif val in existing_ids:
                     max_id += 1
                     new_val = max_id
@@ -193,6 +199,7 @@ def merge_split_reads(split_reads: list, unsplit_reads_1: pd.DataFrame = None):
                     existing_ids.add(new_val)
                 else:
                     new_val = val  # unchanged, but still recorded
+                    max_id = max(max_id, val)        
                     id_mapping[val] = new_val
                     existing_ids.add(new_val)
                 new_vals.append(new_val)
@@ -216,6 +223,14 @@ def merge_unsplit_reads(unsplit_reads: list, id_mapping: dict) -> pd.DataFrame:
     unsplit_reads_1 = unsplit_reads[0]
     unsplit_reads_2 = unsplit_reads[1]
 
+    # file-2 IDs live in their own numbering; move them into file 1's space first
+    mapped = unsplit_reads_2["spliceSiteID"].map(id_mapping)
+    if mapped.isna().any():
+        missing = sorted(unsplit_reads_2.loc[mapped.isna(), "spliceSiteID"].unique())
+        raise KeyError(f"No id_mapping entry for spliceSiteID(s): {missing[:10]}")
+    unsplit_reads_2 = unsplit_reads_2.assign(spliceSiteID=mapped)
+
+    
     meta_cols = [c for c in unsplit_reads_1.columns if c in unsplit_reads_2.columns]
     sample_cols_2 = [c for c in unsplit_reads_2.columns if c not in meta_cols]
 
@@ -235,20 +250,11 @@ def merge_unsplit_reads(unsplit_reads: list, id_mapping: dict) -> pd.DataFrame:
 
     # Step 2: build new rows for unmatched unsplit_reads_2 rows
     if not ur2_unmatched.empty:
-        old_ids = ur2_unmatched["spliceSiteID"]
-        missing = old_ids[~old_ids.isin(id_mapping.keys())]
-        if not missing.empty:
-            raise KeyError(
-                f"No id_mapping entry found for spliceSiteID(s): {sorted(missing.unique().tolist())}. "
-                "Every new spliceSiteID must correspond to a startID/endID handled in merge_split_reads."
-            )
-
+        # IDs were already remapped at the top of this function
         new_rows = pd.DataFrame(0, index=ur2_unmatched.index, columns=merged.columns)
         for col in meta_cols:
             new_rows[col] = ur2_unmatched[col].values
         new_rows[sample_cols_2] = ur2_unmatched[sample_cols_2].values
-        new_rows["spliceSiteID"] = old_ids.map(id_mapping).values
-        # sample_cols_1 stay 0 by construction
 
         result = pd.concat([merged, new_rows], ignore_index=True, sort=False)
     else:

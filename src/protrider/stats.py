@@ -84,15 +84,6 @@ def perform_fdr_correction(pvals, method='bh', axis = 1):
     pvals_adj[mask] = np.nan
     return pvals_adj
 
-# def explode_junctions(pvals, group_ids):
-#     origin_idx, rows, groups = [], [], []
-#     for i, gid in enumerate(group_ids):
-#         for gene in (gid.split(';') if isinstance(gid, str) and ';' in gid else [gid]):
-#             origin_idx.append(i)  
-#             rows.append(pvals.iloc[i])
-#             groups.append(gene)
-#     expanded = pd.DataFrame(rows, columns=pvals.columns).reset_index(drop=True)
-#     return expanded, np.array(origin_idx), groups
 
 def explode_junctions(pvals, group_ids):
     gene_lists = group_ids.apply(lambda g: g.split(';') if isinstance(g, str) and ';' in g else [g])
