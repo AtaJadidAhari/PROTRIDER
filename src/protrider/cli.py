@@ -83,7 +83,13 @@ def plot_all(ctx):
     plots.plot_encoding_dim(out_dir, ctx.obj['find_q_method'], plot_title)
     plots.plot_training_loss(out_dir, plot_title)
     plots.plot_correlation_heatmap(
-        out_dir, ctx.obj['sample_annotation'], plot_title, None)
+        out_dir, out_dir,
+        ctx.obj['sample_annotation'],
+        analysis=ctx.obj['analysis'],
+        plot_title=plot_title,
+        covariate_name=None,
+        row_centered=True
+    )
 
 
 @plot.command('pvals')
