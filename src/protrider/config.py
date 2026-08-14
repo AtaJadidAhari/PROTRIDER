@@ -102,6 +102,12 @@ class ProtriderConfig:
     verbose: bool = False
     device: Literal["gpu", "cpu"] = "gpu"
     n_jobs: int = -1  # Number of parallel jobs, -1 means using all processors
+
+    # Model checkpoint path for saving/loading trained models
+    # If None: train from scratch and save to out_dir/model.pt
+    # If path exists: load model from this path and skip training
+    # If path doesn't exist: train and save to this path
+    checkpoint_path: Optional[str] = None
     
     def __post_init__(self):
         """Validate configuration after initialization and set computed fields."""
