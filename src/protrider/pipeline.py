@@ -53,7 +53,12 @@ class Result:
     log2fc: np.ndarray
     fc: np.ndarray
     pval_dist: str = 'gaussian'  # Distribution used for p-value computation
+    latent_values: pd.DataFrame
     outlier_threshold: float = 0.1  # Threshold for determining outliers (adjusted p value cutoff)
+    # OUTRIDER results
+    dispersions: pd.DataFrame = None # Dispersions for OUTRIDER or FRASER
+     mu: pd.DataFrame = None # OUTRIDER mu
+    # FRASER results
     delta_psi_cutoff: float = 0.1  # Threshold for delta PSI (jaccard) for fraser
     min_count: int = 5  # Minimum total count threshold for fraser
     gene_level_info: Optional[dict] = None  # Gene-level information for Fraser 
@@ -274,12 +279,33 @@ class Result:
             out_p = f'{out_dir}/fc.csv'
             self.fc.T.to_csv(out_p, header=True, index=True)
             logger.info(f"Saved fc scores to {out_p}")
+
+            # latent vector
+            out_p = f'{out_dir}/latent_values.csv'
+            self.latent_values.to_csv(out_p, header=True, index=True)
+            logger.info(f"Saved latent values to {out_p}")
             
             # AE raw, filtered input
             if analysis == 'outrider':
                 out_p = f'{out_dir}/raw_filtered_input.csv'
                 self.dataset.raw_filtered.T.to_csv(out_p, header=True, index=True)
                 logger.info(f"Saved raw_filtered_input to {out_p}")
+
+                # sizefactors
+                sf_df = pd.DataFrame(self.dataset.size_factors.cpu(), index=self.dataset.raw_filtered.index, columns=["size_factor"])
+                out_p = f'{out_dir}/sizefactors.csv'
+                sf_df.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved sizefactors to to {out_p}")
+                
+                # dispersions
+                out_p = f'{out_dir}/theta.csv'
+                self.dispersions.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved thetas to to {out_p}")
+
+                # mu
+                out_p = f'{out_dir}/mu.csv'
+                self.mu.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved mus to to {out_p}")
 
             return None
             
@@ -674,6 +700,7 @@ def _run_protrider_standard(
     logger.info('Computing statistics')
     model_input = model if config.analysis != "protrider" else None
     mu, sigma, df0, df_res = fit_residuals(dataset, df_out, model_input, config) # for fraser df_res is N.T
+    latent_values = model.get_latent_values()
     timer.step('Fitting residuals')
     x_true = dataset.K.T.values if config.analysis == "fraser" else dataset.raw_filtered.values
     pvals, Z = get_pvals(x_true=x_true,
@@ -716,7 +743,8 @@ def _run_protrider_standard(
                              pseudocount=config.pseudocount, outlier_threshold=config.outlier_threshold,
                              delta_psi_cutoff = config.delta_psi_threshold, min_count=config.min_count,
                              base_fn=config.base_fn, pval_dist=config.pval_dist,
-                             gene_level_info=gene_level_info)
+                             gene_level_info=gene_level_info, latent_values=latent_values,
+                             dispersions=theta, mu=mu)
     model_info = ModelInfo(q=np.array(q), learning_rate=np.array(config.lr),
                            n_epochs=np.array(config.n_epochs), test_loss=np.array(final_loss),
                            train_losses=np.array(train_losses), df_folds=None)
@@ -1024,7 +1052,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
 
 def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset,
                     pseudocount, outlier_threshold, base_fn, pval_dist, delta_psi_cutoff=0.1, min_count=5,
-                    gene_level_info = None):
+                    gene_level_info = None, latent_values, dispersions=None, mu=None):
     # Store as df
     if not isinstance(pvals_adj, pd.DataFrame):
         df_pvals_adj = pd.DataFrame(pvals_adj)
@@ -1064,9 +1092,23 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
             (base_fn(df_out) + pseudocount)
     else:
         log2fc, fc = None, None
+
+    if dispersions is not None:
+        dispersions = pd.DataFrame(dispersions)
+        dispersions.columns = ["theta"]
+        dispersions.index = dataset.data.columns
+    if mu is not None:
+        mu = pd.DataFrame(mu)
+        mu.columns = ["mu"]
+        mu.index = dataset.data.columns
+
+    df_latent_values = pd.DataFrame(latent_values)
+    df_latent_values.index = dataset.data.index
+    df_latent_values = df_latent_values.T
+    df_latent_values.index.name = "enc_dim"
         
 
     return Result(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence, df_pvals=df_pvals, df_Z=df_Z,
                   df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc,
                   pval_dist=pval_dist, outlier_threshold=outlier_threshold, delta_psi_cutoff = delta_psi_cutoff, min_count = min_count,
-                  gene_level_info = gene_level_info)
+                  gene_level_info = gene_level_info, latent_values=df_latent_values, dispersions=dispersions, mu=mu)

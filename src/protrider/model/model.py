@@ -165,6 +165,7 @@ class OmicAutoencoder(nn.Module):
         self.model_type = model_type
         self.n_layers = n_layers
         self.presence_absence = presence_absence
+        self.latent_values = None
         self.encoder = ConditionalEnDecoder(in_dim=in_dim + n_cov,
                                             out_dim=latent_dim, h_dim=h_dim, n_layers=n_layers,
                                             is_encoder=True, omic_means=omic_means)
@@ -195,6 +196,9 @@ class OmicAutoencoder(nn.Module):
 
         z = self.encoder(x, cond=cond)
         out = self.decoder(z, cond=cond)
+
+        self.latent_values = self.encoder(x, cond=cond)
+            out = self.decoder(self.latent_values, cond=cond)
 
         if self.model_type == "outrider":
             out = torch.clip(out, -700, 700)
@@ -239,6 +243,9 @@ class OmicAutoencoder(nn.Module):
     def get_dispersion_parameters(self):
         """Get dispersion parameters (mu_scale, theta)"""
         return self.dispersion.get_parameters()
+
+    def get_latent_values(self):
+        return self.latent_values
 
 
 def mse_masked(x_hat, x, mask):
