@@ -460,7 +460,8 @@ class FraserDataset(Dataset, PCADataset):
             self.split_reads, self.unsplit_reads = sr[0], ur[0]
             
         self.unsplit_reads.columns = self.unsplit_reads.columns.str.lstrip("X") # ONLY for batch file
-        self.sample_ids = self.split_reads.columns.intersection(self.unsplit_reads.columns) 
+        meta_cols = ["seqnames", "startID", "endID", "start", "width", "end", "strand", "spliceSiteID", "type", "intron_motif"]
+        self.sample_ids = self.split_reads.columns.intersection(self.unsplit_reads.columns).difference(meta_cols)
         logger.info(f"Number of samples in the dataset: {len(self.sample_ids)}")
 
         logger.info("Calculating K and N")
@@ -541,10 +542,6 @@ class FraserDataset(Dataset, PCADataset):
             logger.info("Annotating junctions with GTF.")
             self.annotate_junctions(gtf)
             
-
-        # Input and output of autoencoder is:
-        # uncentered data without NaNs, replacing NANs with means
-        #self.X = self.centered_log_data_noNA + self.junc_means  # ASK
         # Read and preprocess covariates
         if sa_file is not None and cov_used is not None:
             try:
@@ -708,14 +705,7 @@ class FraserDataset(Dataset, PCADataset):
 
         # Then sort by medianCount first, fds_order second
         ov_df = ov_df.sort_values(["medianCount", "fds_order"],ascending=[False, True])   # highest count first, lowest FDS index first for ties
-        #print("Before choosing in ov_df: ")
-        #print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
         ov_df = ov_df.drop_duplicates(subset="junction_idx", keep="first")
-        #print("After choosing in ov_df: ")
-        #print(ov_df[(ov_df["Start"] == 35140132) &  (ov_df["End"] == 35144342) ])
-        #ov_df = ov_df.sort_values("medianCount", ascending=False)
-        #ov_df = ov_df.drop_duplicates(subset="junction_idx", keep="first")
-
         s = ov_df["Start"] == ov_df["Start_b"]
         e = ov_df["End"]   == ov_df["End_b"]
         ov_df["annotatedJunction"] = np.select(

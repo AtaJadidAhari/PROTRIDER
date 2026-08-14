@@ -102,10 +102,9 @@ def estimate_rho_robust_moments(K: torch.Tensor, N: torch.Tensor, rho_min: float
 
     rho = 1.0 / (1.0 + a + b)
 
-    # fallback for invalid cases #TODO
     invalid = (a < 0) | (b < 0) | torch.isnan(rho) | torch.isinf(rho)
     rho[invalid] = rho_min
 
-    rho = torch.clamp(rho, rho_min, rho_max) #TODO
+    rho = torch.clamp(rho, rho_min, rho_max) 
 
     return rho
