@@ -198,7 +198,7 @@ class OmicAutoencoder(nn.Module):
         out = self.decoder(z, cond=cond)
 
         self.latent_values = self.encoder(x, cond=cond)
-            out = self.decoder(self.latent_values, cond=cond)
+        out = self.decoder(self.latent_values, cond=cond)
 
         if self.model_type == "outrider":
             out = torch.clip(out, -700, 700)

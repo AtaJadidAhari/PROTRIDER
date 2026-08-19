@@ -23,11 +23,11 @@ __all__ = ["run"]
 logger = logging.getLogger(__name__)
 
 
-def save_model(model: ProtriderAutoencoder, checkpoint_path: str, q: int) -> None:
+def save_model(model: OmicAutoencoder, checkpoint_path: str, q: int) -> None:
     """Save model state dict and metadata to checkpoint path.
     
     Args:
-        model: Trained ProtriderAutoencoder model
+        model: Trained OmicAutoencoder model
         checkpoint_path: Path where to save the model checkpoint
         q: Latent dimension
     """
@@ -46,7 +46,7 @@ def save_model(model: ProtriderAutoencoder, checkpoint_path: str, q: int) -> Non
 
 
 def load_model(dataset: Union[ProtriderDataset, ProtriderSubset], checkpoint_path: str, 
-               config: ProtriderConfig) -> Tuple[Optional[ProtriderAutoencoder], Optional[int]]:
+               config: ProtriderConfig) -> Tuple[Optional[OmicAutoencoder], Optional[int]]:
     """Load model from checkpoint path if it exists.
     
     Args:
@@ -75,7 +75,7 @@ def load_model(dataset: Union[ProtriderDataset, ProtriderSubset], checkpoint_pat
         # Initialize model with saved architecture
         n_cov = dataset.covariates.shape[1]
         n_prots = dataset.X.shape[1]
-        model = ProtriderAutoencoder(
+        model = OmicAutoencoder(
             in_dim=n_prots, 
             latent_dim=q, 
             n_layers=n_layers, 
@@ -128,12 +128,12 @@ class Result:
     df_pvals_adj: pd.DataFrame
     log2fc: np.ndarray
     fc: np.ndarray
-    pval_dist: str = 'gaussian'  # Distribution used for p-value computation
     latent_values: pd.DataFrame
+    pval_dist: str = 'gaussian'  # Distribution used for p-value computation
     outlier_threshold: float = 0.1  # Threshold for determining outliers (adjusted p value cutoff)
     # OUTRIDER results
     dispersions: pd.DataFrame = None # Dispersions for OUTRIDER or FRASER
-     mu: pd.DataFrame = None # OUTRIDER mu
+    mu: pd.DataFrame = None # OUTRIDER mu
     # FRASER results
     delta_psi_cutoff: float = 0.1  # Threshold for delta PSI (jaccard) for fraser
     min_count: int = 5  # Minimum total count threshold for fraser
@@ -1138,7 +1138,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
 
 def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset,
                     pseudocount, outlier_threshold, base_fn, pval_dist, delta_psi_cutoff=0.1, min_count=5,
-                    gene_level_info = None, latent_values, dispersions=None, mu=None):
+                    gene_level_info = None, latent_values = None, dispersions=None, mu=None):
     # Store as df
     if not isinstance(pvals_adj, pd.DataFrame):
         df_pvals_adj = pd.DataFrame(pvals_adj)
@@ -1184,9 +1184,13 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
         dispersions.columns = ["theta"]
         dispersions.index = dataset.data.columns
     if mu is not None:
-        mu = pd.DataFrame(mu)
-        mu.columns = ["mu"]
-        mu.index = dataset.data.columns
+        mu = np.asarray(mu)
+        if mu.ndim == 1:
+            # OUTRIDER/PROTRIDER: single dispersion-scale value per feature
+            mu = pd.DataFrame(mu, columns=["mu"], index=dataset.data.columns)
+        else:
+            # FRASER: predicted probability per junction (rows) x sample (cols)
+            mu = pd.DataFrame(mu, index=dataset.data.columns, columns=dataset.data.index)
 
     df_latent_values = pd.DataFrame(latent_values)
     df_latent_values.index = dataset.data.index

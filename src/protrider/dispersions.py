@@ -119,31 +119,38 @@ class FraserDispersion():
         self.mu = torch.clip(self.mu, lower, upper)
 
 
-    def fit(self, K , N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100):
-        mu = torch.sigmoid(x_pred).T          # (junctions, samples)
-        _, rho_init = self.distribution.init_fit(K, N)
+    def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100,
+            logit_bound=30.0, tol=1e-7):
+        mu = torch.sigmoid(x_pred).T.to(torch.float64)   # (junctions, samples)
+        K = K.to(torch.float64)                          # (junctions, samples)
+        N = N.to(torch.float64)                          # (junctions, samples)
+        _, rho_init = self.distribution.init_fit(K, N)   # (junctions,)
 
-        K_np   = K.numpy()#;  N_np = N.numpy()
-        #mu_np  = mu.detach().numpy()           # (junctions, samples)
-        logit_min = np.log(rho_min / (1 - rho_min))
-        logit_max = np.log(rho_max / (1 - rho_max))
+        logit_min, logit_max = -logit_bound, logit_bound
 
-        def nll(logit_rho, k, n, m):
-            rho = torch.tensor([[1.0 / (1.0 + np.exp(-logit_rho))]], dtype=torch.float64)
-            return self.distribution.loss_penalized(k, n, m, rho, lambda_penalty=lambda_penalty).item()
+        logit_rho = torch.logit(rho_init.to(torch.float64).clamp(rho_min, rho_max)).detach()
 
-        rho_final = np.empty(K_np.shape[0])
-        for j in range(K_np.shape[0]):
-            k_j = K[j].unsqueeze(0)    # (1, samples)
-            n_j = N[j].unsqueeze(0)    # (1, samples)
-            mu_j = mu[j].unsqueeze(0)  # (1, samples)
+        for _ in range(max_iter):
+            with torch.enable_grad():
+                logit_rho.requires_grad_(True)
+                rho = torch.sigmoid(logit_rho).unsqueeze(-1)  # (junctions, 1)
+                loss = self.distribution.loss_penalized(K, N, mu, rho, lambda_penalty)  # (junctions,)
+                grad, = torch.autograd.grad(loss.sum(), logit_rho, create_graph=True)
+                hess, = torch.autograd.grad(grad.sum(), logit_rho)
 
-            res = minimize_scalar(lambda lr: nll(lr, k_j, n_j, mu_j), bounds=(logit_min, logit_max), method='bounded', options={'maxiter': max_iter, 'xatol': 1e-9})
-            rho_j = 1.0 / (1.0 + np.exp(-res.x))
-            rho_final[j] = rho_j if np.isfinite(rho_j) else rho_init[j].item()
+            hess_safe = torch.where(hess > 1e-8, hess, torch.full_like(hess, 1e-8))
+            step = torch.clamp(grad / hess_safe, -5.0, 5.0)
+            logit_rho = (logit_rho - step).detach().clamp(logit_min, logit_max)
 
-        self.rho = torch.tensor(rho_final, dtype=torch.float64)
-        self.mu  = mu
+            if step.abs().max() < tol:
+                break
+
+        with torch.no_grad():
+            rho_final = torch.sigmoid(logit_rho)
+            rho_final = torch.where(torch.isfinite(rho_final), rho_final, rho_init.to(torch.float64))
+
+        self.rho = rho_final.detach()
+        self.mu = mu
 
 class Distribution(): # Do we need this base class?
     #@abc.abstractmethod
