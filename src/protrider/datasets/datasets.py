@@ -478,7 +478,7 @@ class FraserDataset(Dataset, PCADataset):
         logger.info("Calculating Jaccard index")
         start = time.time()
 
-        self.jaccard_index = self.K / self.N
+        self.jaccard_index = (self.K / self.N).astype(np.float32)
 
         # Jaccard filter expression
         self.filter_expression_jaccard(minExpressionInOneSample , quantile, quantileMinExpression)
@@ -524,7 +524,7 @@ class FraserDataset(Dataset, PCADataset):
         self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0).float()
         self.X = self.X + self.omic_means_torch
         self.raw_filtered = self.data
-        self.raw_x = torch.tensor(self.raw_filtered.values)
+        self.raw_x = torch.tensor(self.raw_filtered.values, dtype=torch.float32)
         # split-read counts (K) and total counts (N), samples x junctions, aligned with X/raw_x
         self.K_tensor = torch.tensor(self.K.T.values, dtype=torch.float32)
         self.N_tensor = torch.tensor(self.N.T.values, dtype=torch.float32)
@@ -538,6 +538,7 @@ class FraserDataset(Dataset, PCADataset):
         })
 
         # Annotate junctions with gene symbols if a GTF file is provided
+        self.gtf = gtf
         if gtf is not None:
             logger.info("Annotating junctions with GTF.")
             self.annotate_junctions(gtf)
@@ -626,11 +627,11 @@ class FraserDataset(Dataset, PCADataset):
         X_logit = X_logit.T
         return X_logit
         
-    def annotate_junctions(self, gtf_file: str, feature_name: str = "hgnc_symbol"):
-        """Annotate junctions with gene symbols and reference overlap status.
+    def annotate_junctions(self, gtf_file: str, feature_name: str = "gene_id"):
+        """Annotate junctions with gene IDs and reference overlap status.
 
         Adds two columns to self.intron_ranges:
-          - feature_name (default 'hgnc_symbol'): semicolon-joined gene symbols from
+          - feature_name (default 'gene_id'): semicolon-joined gene IDs from
             overlapping genes in the GTF; NA if no overlap.
           - 'annotatedJunction': 'both' (exact intron match), 'start' (only 5' end
             matches), 'end' (only 3' end matches), or 'none'.
@@ -639,15 +640,15 @@ class FraserDataset(Dataset, PCADataset):
         gtf_file : str
             Path to a GTF annotation file.
         feature_name : str
-            Column name for the gene symbol annotation. Default: 'hgnc_symbol'.
+            Column name for the gene ID annotation. Default: 'gene_id'.
         """
         gtf = pr.read_gtf(gtf_file)
         n = len(self.intron_ranges)
 
-        #  1. hgnc_symbol 
+        #  1. gene_id
         genes_df = (
             gtf[gtf.Feature == "gene"]
-            .df[["Chromosome", "Start", "End", "Strand", "gene_name"]]
+            .df[["Chromosome", "Start", "End", "Strand", "gene_id"]]
             .drop_duplicates()
             .assign(Strand=lambda d: d["Strand"].astype(str))
         )
@@ -662,7 +663,7 @@ class FraserDataset(Dataset, PCADataset):
         if not joined.df.empty:
             symbol_map = (
                 joined.df
-                .groupby("junction_idx")["gene_name"]
+                .groupby("junction_idx")["gene_id"]
                 .apply(lambda x: ";".join(sorted(set(x.dropna()))))
             )
             self.intron_ranges[feature_name] = pd.Series(np.arange(n)).map(symbol_map).values
@@ -670,10 +671,10 @@ class FraserDataset(Dataset, PCADataset):
             self.intron_ranges[feature_name] = pd.NA
 
         #  2. annotatedJunction 
-        # All unique reference introns from GTF
+        # All unique reference introns from GTF (coordinates only — the gene column is not used by the exact-match merge below)
         known_introns_df = (
             gtf.features.introns(by="transcript")
-            .df[["Chromosome", "Start", "End", "Strand", "gene_name"]]
+            .df[["Chromosome", "Start", "End", "Strand"]]
             .drop_duplicates()
             .reset_index(drop=True)
             .assign(Strand=lambda d: d["Strand"].astype(str))
@@ -717,6 +718,12 @@ class FraserDataset(Dataset, PCADataset):
         annotations[idx] = ov_df["annotatedJunction"].values
 
         self.intron_ranges["annotatedJunction"] = annotations
+
+
+    def build_gene_id_to_name_map(self, gtf_file: str) -> dict:
+        gtf = pr.read_gtf(gtf_file)
+        genes_df = gtf[gtf.Feature == "gene"].df[["gene_id", "gene_name"]].drop_duplicates()
+        return dict(zip(genes_df["gene_id"], genes_df["gene_name"]))
     
     def calculate_counts(self) -> dict[str, pd.DataFrame]:
         # returns samples* junctions

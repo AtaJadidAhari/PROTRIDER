@@ -176,6 +176,8 @@ class Result:
         n_samples = len(self.dataset.sample_ids)
         chunk_size = max(1, self.junction_chunk_rows // max(1, n_samples))
 
+        gene_id_to_name = self.dataset.build_gene_id_to_name_map(self.dataset.gtf) if self.dataset.gtf is not None else {}
+
         def build_chunk(gene_chunk):
             gene_junctions = kept_junctions.reindex(gene_chunk)
 
@@ -185,7 +187,8 @@ class Result:
                 'GENE_PADJ': gene_padj.reindex(gene_chunk),
                 'junctionID': gene_junctions,
             }, axis=1).stack(future_stack=True).reset_index()
-            gene_level.columns = ['hgnc_symbol', 'sampleID', 'GENE_PVALUE', 'GENE_PADJ', 'junctionID']
+            gene_level.columns = ['gene_id', 'sampleID', 'GENE_PVALUE', 'GENE_PADJ', 'junctionID']
+            gene_level['hgnc_symbol'] = gene_level['gene_id'].map(gene_id_to_name).fillna(gene_level['gene_id'])
 
             junc_ids_needed = pd.unique(gene_junctions.to_numpy().ravel())
             junc_ids_needed = junc_ids_needed[pd.notna(junc_ids_needed)]
@@ -204,9 +207,17 @@ class Result:
         return self.stream_write_long_table(all_path, filtered_path, gene_ids, chunk_size, build_chunk, prefix='GENE', analysis='fraser', compressed=False)
 
     def fraser_junc_meta_with_aggregates(self) -> pd.DataFrame:
+        gene_id_to_name = self.dataset.build_gene_id_to_name_map(self.dataset.gtf) if self.dataset.gtf is not None else {}
+
+        def _map_gene_ids(gene_id_str):
+            if pd.isna(gene_id_str):
+                return pd.NA
+            return ";".join(sorted(set(gene_id_to_name.get(gid, gid) for gid in gene_id_str.split(';'))))
+
+        hgnc_symbol = self.dataset.intron_ranges["gene_id"].apply(_map_gene_ids)
         junc_meta = pd.concat([
             self.dataset.split_reads[["seqnames", "start", "end", "width", "strand"]],
-            self.dataset.intron_ranges[["hgnc_symbol", "annotatedJunction"]],
+            pd.DataFrame({'hgnc_symbol': hgnc_symbol, 'annotatedJunction': self.dataset.intron_ranges['annotatedJunction']}),
             ], axis=1)
         # for col in ["seqnames", "strand", "hgnc_symbol", "annotatedJunction"]:
         #     junc_meta[col] = junc_meta[col].astype("category")
@@ -234,7 +245,7 @@ class Result:
                 df_chunk.to_csv(f_out, header=first, index=False)
                 total_rows += len(df_chunk)
                 df_filtered_chunk = df_chunk[df_chunk[f'{prefix}_outlier']].copy()
-                logger.info(f'Wrote {prefix.lower()}-level output summary chunk {i}-{i + len(id_chunk)} to {all_path}')
+                logger.debug(f'Wrote {prefix.lower()}-level output summary chunk {i}-{i + len(id_chunk)} to {all_path}')
                 filtered_chunks.append(df_filtered_chunk)
 
                 del df_chunk, df_filtered_chunk
@@ -810,7 +821,7 @@ def _run_protrider_standard(
                                     dis=config.pval_dist,
                                     n_jobs=config.n_jobs)
     timer.step('Computing p-values')
-    group_ids = dataset.intron_ranges["hgnc_symbol"] if config.analysis == "fraser" else None
+    group_ids = dataset.intron_ranges["gene_id"] if config.analysis == "fraser" else None
     # TODO make it shorter!
     if isinstance(pvals, pd.DataFrame):
         pvals_for_adj = pvals
@@ -1024,7 +1035,7 @@ def _run_protrider_cv(
                                     dis=config.pval_dist,
                                     n_jobs=config.n_jobs)
 
-    group_ids = dataset.intron_ranges["hgnc_symbol"] if config.analysis == "fraser" else None
+    group_ids = dataset.intron_ranges["gene_id"] if config.analysis == "fraser" else None
     # TODO make it shorter!
     if isinstance(pvals, pd.DataFrame):
         pvals_for_adj = pvals

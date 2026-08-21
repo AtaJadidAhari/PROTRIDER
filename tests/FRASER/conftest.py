@@ -8,7 +8,7 @@ ROOT = Path(__file__).parent.parent.parent  # PROTRIDER/
 DATA_DIR = ROOT / "sample_data/fraser"
 GTF_PATH = ROOT / "sample_data/gencode_annotation_trunc.gtf"
 
-# Fixed filter params used consistently across dataset construction and R-reference comparisons.
+# Fixed filter params used consistently across dataset construction and reference comparisons.
 MIN_EXPRESSION_IN_ONE_SAMPLE = 20
 QUANTILE = 0.95
 QUANTILE_MIN_EXPRESSION = 10
@@ -44,11 +44,10 @@ def fraser_dataset(split_reads_path, unsplit_reads_path):
 def fraser_dataset_unfiltered(split_reads_path, unsplit_reads_path):
     """FraserDataset with all filters disabled, keeping all 982 junctions.
 
-    FRASER-R's fitPCA (implementation='PCA') fits the encoder/decoder on the *full* junction
-    set, not just the ones passing the expression/variability filters (those filters only
-    decide which junctions get tested downstream). Reproducing R's predicted_means.csv /
-    rho.csv therefore requires fitting on this unfiltered dataset, in the same row order as
-    K.tsv / N.tsv / junction_annotations.csv.
+    PCA fitting fits the encoder/decoder on the *full* junction set, not just the ones
+    passing the expression/variability filters (those filters only decide which junctions
+    get tested downstream). Reproducing the reference predicted means/dispersion therefore
+    requires fitting on this unfiltered dataset, in the same row order as the reference files.
     """
     return FraserDataset(
         split_reads=[split_reads_path],
@@ -76,51 +75,51 @@ def fraser_dataset_annotated(split_reads_path, unsplit_reads_path):
     )
 
 
-# ── R reference fixtures (full, unfiltered set of 982 junctions) ──────────────
+# ── Reference fixtures (full, unfiltered set of 982 junctions) ──────────────
 
 @pytest.fixture(scope="session")
 def r_K():
-    """R reference: split-read counts K, all junctions (junctions x samples)."""
+    """Reference split-read counts K, all junctions (junctions x samples)."""
     return pd.read_csv(DATA_DIR / "K.tsv", sep="\t")
 
 
 @pytest.fixture(scope="session")
 def r_N():
-    """R reference: Jaccard denominator N, all junctions (junctions x samples)."""
+    """Reference Jaccard denominator N, all junctions (junctions x samples)."""
     return pd.read_csv(DATA_DIR / "N.tsv", sep="\t")
 
 
 @pytest.fixture(scope="session")
 def r_annotations():
-    """R reference: per-junction filter flags and gene annotations, all junctions."""
+    """Reference per-junction filter flags and gene annotations, all junctions."""
     return pd.read_csv(DATA_DIR / "junction_annotations.csv", index_col=0)
 
 
 @pytest.fixture(scope="session")
 def r_x():
-    """R reference: centered logit-transformed input matrix, all junctions (samples x junctions)."""
+    """Reference centered logit-transformed input matrix, all junctions (samples x junctions)."""
     return pd.read_csv(DATA_DIR / "x.csv", index_col=0)
 
 
 @pytest.fixture(scope="session")
 def r_predicted_means():
-    """R reference: PCA-fitted predicted means, all junctions (junctions x samples)."""
+    """Reference PCA-fitted predicted means, all junctions (junctions x samples)."""
     return pd.read_csv(DATA_DIR / "predicted_means.csv", index_col=0)
 
 
 @pytest.fixture(scope="session")
 def r_rho():
-    """R reference: fitted Beta-Binomial dispersion, all junctions (junctions x 1)."""
+    """Reference fitted Beta-Binomial dispersion, all junctions (junctions x 1)."""
     return pd.read_csv(DATA_DIR / "rho.csv", index_col=0)
 
 
 @pytest.fixture(scope="session")
 def r_pvals():
-    """R reference: raw Beta-Binomial p-values, all junctions (junctions x samples)."""
+    """Reference raw Beta-Binomial p-values, all junctions (junctions x samples)."""
     return pd.read_csv(DATA_DIR / "pVals.csv")
 
 
 @pytest.fixture(scope="session")
 def r_pvals_adj():
-    """R reference: Holm/BY-adjusted p-values, all junctions (junctions x samples)."""
+    """Reference Holm/BY-adjusted p-values, all junctions (junctions x samples)."""
     return pd.read_csv(DATA_DIR / "pValsAdj.csv")

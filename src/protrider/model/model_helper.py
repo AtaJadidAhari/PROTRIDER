@@ -211,8 +211,8 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
     if model_type == "outrider":
         model.dispersion.set_dispersion(model.dispersion.distribution.init_train(dataset.X.T)[1]) 
     elif model_type == "fraser":
-        K_torch = torch.tensor(dataset.K.values, dtype=torch.float64, device=device)
-        N_torch = torch.tensor(dataset.N.values, dtype=torch.float64, device=device)
+        K_torch = torch.tensor(dataset.K.values, dtype=torch.float32, device=device)
+        N_torch = torch.tensor(dataset.N.values, dtype=torch.float32, device=device)
         model.dispersion.set_dispersion(model.dispersion.distribution.init_train(K_torch, N_torch)[1])
     
 

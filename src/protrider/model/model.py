@@ -197,8 +197,7 @@ class OmicAutoencoder(nn.Module):
         z = self.encoder(x, cond=cond)
         out = self.decoder(z, cond=cond)
 
-        self.latent_values = self.encoder(x, cond=cond)
-        out = self.decoder(self.latent_values, cond=cond)
+        self.latent_values = z[0] if self.presence_absence else z
 
         if self.model_type == "outrider":
             out = torch.clip(out, -700, 700)
@@ -502,12 +501,13 @@ class BetaBinomialLoss(nn.Module):
         K, N = targets
 
         if self.presence_absence:
-            presence = (~mask).double()
+            presence = (~mask).to(mu_pred.dtype)
             presence_hat = mu_pred[1]
             mu_pred = mu_pred[0]
 
         if not isinstance(rho, torch.Tensor):
-            rho = torch.tensor(rho, dtype=torch.float64, device=mu_pred.device)
+            rho = torch.tensor(rho, dtype=torch.float32, device=mu_pred.device)
+        rho = rho.to(mu_pred.dtype)
         if rho.dim() == 1:
             rho = rho.unsqueeze(0)
 

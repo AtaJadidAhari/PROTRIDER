@@ -130,6 +130,13 @@ class FraserDispersion():
 
         logit_rho = torch.logit(rho_init.to(torch.float64).clamp(rho_min, rho_max)).detach()
 
+        def eval_loss(lr):
+            rho = torch.sigmoid(lr).unsqueeze(-1)
+            return self.distribution.loss_penalized(K, N, mu, rho, lambda_penalty)
+
+        damping = torch.full_like(logit_rho, 1e-3)
+        loss_curr = eval_loss(logit_rho).detach()
+
         for _ in range(max_iter):
             with torch.enable_grad():
                 logit_rho.requires_grad_(True)
@@ -138,9 +145,18 @@ class FraserDispersion():
                 grad, = torch.autograd.grad(loss.sum(), logit_rho, create_graph=True)
                 hess, = torch.autograd.grad(grad.sum(), logit_rho)
 
-            hess_safe = torch.where(hess > 1e-8, hess, torch.full_like(hess, 1e-8))
-            step = torch.clamp(grad / hess_safe, -5.0, 5.0)
-            logit_rho = (logit_rho - step).detach().clamp(logit_min, logit_max)
+            # damped Hessian (never near-zero) instead of a hard floor
+            hess_damped = hess.abs() + damping
+            step = torch.clamp(grad / hess_damped, -5.0, 5.0)
+            candidate = (logit_rho.detach() - step).clamp(logit_min, logit_max)
+
+            cand_loss = eval_loss(candidate).detach()
+            improved = cand_loss < loss_curr
+
+            # only accept steps that actually reduce the loss; else keep old value
+            logit_rho = torch.where(improved, candidate, logit_rho.detach()).detach()
+            loss_curr = torch.where(improved, cand_loss, loss_curr)
+            damping = torch.where(improved, damping * 0.7, damping * 2.0).clamp(1e-6, 1e6)
 
             if step.abs().max() < tol:
                 break

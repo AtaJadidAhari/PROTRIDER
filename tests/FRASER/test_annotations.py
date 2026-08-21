@@ -7,7 +7,7 @@ def test_annotation_matches_r_reference(fraser_dataset_annotated, r_annotations)
     ours = ds.intron_ranges.set_index(["StartId", "EndId"])
 
     common_idx = ours.index.intersection(ref_by_pos.index)
-    assert len(common_idx) == len(ours), "Every filtered junction should be matchable to the R reference by position"
+    assert len(common_idx) == len(ours), "Every filtered junction should be matchable to the reference by position"
 
     matches = (
         ours.loc[common_idx, "annotatedJunction"].to_numpy()

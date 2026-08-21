@@ -9,12 +9,12 @@ def test_K_and_N_match_r_reference(fraser_dataset, r_K, r_N):
 
     # fraser_dataset's split_reads/K/N have already been filtered in-place, so instead of a
     # positional comparison, assert that every filtered junction's (K, N) row can be found
-    # among the R reference rows for the same (unfiltered) junction set.
+    # among the reference rows for the same (unfiltered) junction set.
     filtered_K = fraser_dataset.K[sample_ids].values
     filtered_N = fraser_dataset.N[sample_ids].values
     for i in range(filtered_K.shape[0]):
         matches = np.all(r_K_vals == filtered_K[i], axis=1) & np.all(r_N_vals == filtered_N[i], axis=1)
-        assert matches.any(), f"Filtered junction {i} (K,N) row not found in R reference K.tsv/N.tsv"
+        assert matches.any(), f"Filtered junction {i} (K,N) row not found in reference K.tsv/N.tsv"
 
 
 def test_expression_filter_matches_r_reference(fraser_dataset, r_annotations):
@@ -38,3 +38,26 @@ def test_logit_transform_matches_r_reference(r_K, r_N, r_x):
     centered = logit - np.nanmean(logit, axis=0, keepdims=True)
 
     np.testing.assert_allclose(r_x.values, centered, rtol=1e-6, atol=1e-8)
+
+
+# ── Getter/setter invariants ─────────────────────────────────────────────
+#
+# calculate_counts() should expose 'counts' == K and 'totalCounts' == N,
+# where N is already the Jaccard denominator.
+
+def test_calculate_counts_matches_K_and_N(fraser_dataset):
+    counts = fraser_dataset.calculate_counts()
+
+    pd.testing.assert_frame_equal(
+        counts["counts"], fraser_dataset.K.T.astype(np.int32), check_names=False
+    )
+    pd.testing.assert_frame_equal(
+        counts["totalCounts"], fraser_dataset.N.T.astype(np.int32), check_names=False
+    )
+
+
+def test_jaccard_index_equals_K_over_N(fraser_dataset):
+    expected = (fraser_dataset.K / fraser_dataset.N).astype(np.float32)
+    np.testing.assert_allclose(
+        fraser_dataset.jaccard_index.to_numpy(), expected.to_numpy(), equal_nan=True
+    )
