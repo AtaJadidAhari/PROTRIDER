@@ -462,7 +462,7 @@ def get_pv_t(res, sigma, mu, df0, how='two-sided', n_jobs=-1):
             1], "sigma should be a scalar or a vector of the same length as the number of proteins"
     if not isinstance(mu, (int, float)):
         assert len(mu) == res.shape[1], "mu should be a scalar or a vector of the same length as the number of proteins"
-    assert isinstance(df0, (int, float)), "df0 should be a scalar"
+    assert np.isscalar(df0), "df0 should be a scalar"
 
     def process_column_with_df(j):
         x = res[:, j]
