@@ -1,10 +1,8 @@
 from collections import defaultdict
 
-import numpy as np
 import yaml
 from pathlib import Path
 import click
-import torch
 import logging
 
 from .pipeline import run as run_pipeline
@@ -246,11 +244,6 @@ def run(config_path: str):
     if (config.find_q_method == 'OHT') and config.presence_absence:
         logger.warning(
             'OHT has not been evaluated on presence/absence analysis yet')
-
-    if config.seed is not None:
-        logger.info('Setting random seed: %s', config.seed)
-        torch.manual_seed(config.seed)
-        np.random.seed(config.seed)
 
     # Run PROTRIDER - all inputs are in config
     result, model_info = run_pipeline(config)

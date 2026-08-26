@@ -671,6 +671,11 @@ def run(config: ProtriderConfig) -> Tuple[Result, ModelInfo]:
         ... )
         >>> result, model_info = run(config_cv)
     """
+    if config.seed is not None:
+        logger.info("Setting random seed: %s", config.seed)
+        torch.manual_seed(config.seed)
+        np.random.seed(config.seed)
+
     if config.cross_val:
         logger.info('Running PROTRIDER with cross-validation')
         return _run_protrider_cv(config, config.input_intensities, config.sample_annotation)
