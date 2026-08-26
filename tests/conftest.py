@@ -52,9 +52,11 @@ def gene_annotation_path():
 def config_path():
     return str(ROOT / 'config.yaml')
 
+
 @pytest.fixture(scope="session")
 def split_reads_path():
     return str(ROOT / 'sample_data/fraser/split_reads.tsv')
+
 
 @pytest.fixture(scope="session")
 def unsplit_reads_path():

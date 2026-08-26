@@ -26,7 +26,9 @@ class TestPipelineOUTRIDER:
                 autoencoder_loss='NLL',
                 pval_dist='nb',
                 input_intensities=gene_expression_path,
+                gtf=gene_annotation_path,
                 index_col='geneID',
+                seed=42,
                 n_epochs=2,  # Short for testing
                 gs_epochs=2,  # Short for testing
                 find_q_method='5',  # Fixed q for speed
