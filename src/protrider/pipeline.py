@@ -1,22 +1,25 @@
-import os
 import gc
 import gzip
-import resource
-import numpy as np
-import pandas as pd
-from typing import Union, Tuple, Literal, Optional
 import logging
-import torch
+import os
+import resource
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, Optional, Tuple, Union
 
-from .model import train, train_val, MSEBCELoss, OmicAutoencoder, find_latent_dim, init_model, ModelInfo, NegativeBinomialLoss
-from .datasets import ProtriderDataset, ProtriderSubset, ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator, OutriderDataset, OmicDataset, FraserDataset
-from .stats import get_pvals, fit_residuals, adjust_pvals
-from .plots import plot_cv_loss
+import numpy as np
+import pandas as pd
+import torch
+
 from .config import ProtriderConfig
-import time
-
+from .datasets import (OmicDataset, ProtriderDataset,
+                       ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator,
+                       ProtriderSubset)
+from .model import (ModelInfo, MSEBCELoss, OmicAutoencoder, find_latent_dim,
+                    init_model, train, train_val)
+from .plots import plot_cv_loss
+from .stats import adjust_pvals, fit_residuals, get_pvals
 
 __all__ = ["run"]
 
@@ -794,13 +797,17 @@ def _run_protrider_standard(
     if config.autoencoder_training:
         logger.info('Fitting model')
         _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config.n_epochs, learning_rate=float(config.lr), batch_size=config.batch_size)
+        timer.step('Fitting model')
+
         df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion, batch_size=config.batch_size)
         logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_reconstruction_loss, final_bce_loss)
+        timer.step('Computing final loss')
         save_model(model, str(checkpoint_path), q)
+        timer.step('Saving model')
     else:
         final_loss = init_loss
+        timer.step('Model fitting skipped')
 
-    timer.step('Computing final loss')
     # 6. Compute residuals, pvals, zscores
     logger.info('Computing statistics')
     model_input = model if config.analysis != "protrider" else None
