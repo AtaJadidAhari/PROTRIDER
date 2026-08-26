@@ -51,8 +51,8 @@ class OutriderDispersion():
         x_true, x_pred: torch.Tensor, shape (genes, samples)
         """
 
-        x_true = x_true.to(dtype=torch.float64, device=device)
-        x_pred = x_pred.to(dtype=torch.float64, device=device)
+        x_true = x_true.to(dtype=torch.float32, device=device)
+        x_pred = x_pred.to(dtype=torch.float32, device=device)
         
         mu_scale_init, theta_init = self.distribution.init_fit(x_true, x_pred)
         
@@ -121,14 +121,14 @@ class FraserDispersion():
 
     def fit(self, K, N, x_pred, rho_min=1e-5, rho_max=1-1e-5, lambda_penalty=1e-4, max_iter=100,
             logit_bound=30.0, tol=1e-7):
-        mu = torch.sigmoid(x_pred).T.to(torch.float64)   # (junctions, samples)
-        K = K.to(torch.float64)                          # (junctions, samples)
-        N = N.to(torch.float64)                          # (junctions, samples)
+        mu = torch.sigmoid(x_pred).T.to(torch.float32)   # (junctions, samples)
+        K = K.to(torch.float32)                          # (junctions, samples)
+        N = N.to(torch.float32)                          # (junctions, samples)
         _, rho_init = self.distribution.init_fit(K, N)   # (junctions,)
 
         logit_min, logit_max = -logit_bound, logit_bound
 
-        logit_rho = torch.logit(rho_init.to(torch.float64).clamp(rho_min, rho_max)).detach()
+        logit_rho = torch.logit(rho_init.to(torch.float32).clamp(rho_min, rho_max)).detach()
 
         def eval_loss(lr):
             rho = torch.sigmoid(lr).unsqueeze(-1)
@@ -163,7 +163,7 @@ class FraserDispersion():
 
         with torch.no_grad():
             rho_final = torch.sigmoid(logit_rho)
-            rho_final = torch.where(torch.isfinite(rho_final), rho_final, rho_init.to(torch.float64))
+            rho_final = torch.where(torch.isfinite(rho_final), rho_final, rho_init.to(torch.float32))
 
         self.rho = rho_final.detach()
         self.mu = mu
@@ -193,8 +193,8 @@ class NegativeBinomialDistribution(Distribution):
         Initialize theta and mu for fitting: theta is dispersion, mu_scale the mean
         x_true, size_factors: torch.Tensor, shape (genes, samples)
         """
-        x_true = x_true.to(torch.float64)
-        size_factors = size_factors.to(torch.float64)
+        x_true = x_true.to(torch.float32)
+        size_factors = size_factors.to(torch.float32)
         normalized = x_true / (size_factors + epsilon)
         
         # Calculate mean and var per gene (dim=1)
@@ -231,8 +231,8 @@ class BetaBinomialDistribution(Distribution):
 
     def init_fit(self, K, N, epsilon=1e-8, mu_min=1e-4,rho_min=1e-5, rho_max=1-1e-5):
         """Initialize mu and rho for fitting."""
-        K = K.to(torch.float64)
-        N = N.to(torch.float64)
+        K = K.to(torch.float32)
+        N = N.to(torch.float32)
 
         p = K / (N + epsilon)
 
@@ -254,8 +254,8 @@ class BetaBinomialDistribution(Distribution):
 
     def loss(self, K, N, mu, rho, eps = 0.0):
         """Negative log-likelihood using mu/rho parameterization."""
-        K = K.to(torch.float64)
-        N = N.to(torch.float64)
+        K = K.to(torch.float32)
+        N = N.to(torch.float32)
 
         # convert to alpha/beta
         conc = (1 - rho) / rho

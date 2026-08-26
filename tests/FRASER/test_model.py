@@ -29,9 +29,9 @@ def test_dispersion_fit_correlates_with_r_rho(fraser_dataset_unfiltered, r_rho):
     df_out, theta, df_presence, loss, mse, bce = _inference(ds, model, criterion, batch_size=None)
 
     model.fit_dispersion(
-        torch.tensor(ds.K.values, dtype=torch.float64),
-        torch.tensor(ds.N.values, dtype=torch.float64),
-        torch.tensor(df_out.values, dtype=torch.float64),
+        torch.tensor(ds.K.values, dtype=torch.float32),
+        torch.tensor(ds.N.values, dtype=torch.float32),
+        torch.tensor(df_out.values, dtype=torch.float32),
         max_iter=100,
     )
     _, rho_fit = model.get_dispersion_parameters()

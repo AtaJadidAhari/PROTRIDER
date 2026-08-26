@@ -39,7 +39,7 @@ def fit_residuals(dataset, df_out, model, config):
 
         if mu is None:
             # Fitting NB for outrider if it is not set yet
-            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64)) 
+            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float32), torch.tensor(df_res.T.values, dtype=torch.float32)) 
             mu, theta = model.get_dispersion_parameters() #new
         sigma = theta
 
@@ -48,9 +48,9 @@ def fit_residuals(dataset, df_out, model, config):
         df0 = None
         df_res = dataset.N.T
         # Refit rho against df_out so mu/rho match the restored best-epoch model, not the last epoch.
-        model.fit_dispersion(torch.tensor(dataset.K.values, dtype=torch.float64),
-                            torch.tensor(dataset.N.values, dtype=torch.float64),
-                            torch.tensor(df_out.values, dtype=torch.float64),
+        model.fit_dispersion(torch.tensor(dataset.K.values, dtype=torch.float32),
+                            torch.tensor(dataset.N.values, dtype=torch.float32),
+                            torch.tensor(df_out.values, dtype=torch.float32),
                             max_iter = config.n_epochs)
         mu, rho = model.get_dispersion_parameters()
         sigma = rho
@@ -358,8 +358,8 @@ def _get_pv_t_base(x, mu, sigma, df, how='two-sided'):
     # Mask for NaN values
     x = np.asarray(x)
     mask = ~np.isfinite(x)  # np.isnan(x)
-    pv = np.full_like(x, np.nan, dtype=np.float64)
-    z = np.full_like(x, np.nan, dtype=np.float64)
+    pv = np.full_like(x, np.nan, dtype=np.float32)
+    z = np.full_like(x, np.nan, dtype=np.float32)
 
     try:
         z[~mask] = (x[~mask] - mu) / sigma
@@ -421,7 +421,7 @@ def _fit_t(res, max_df=100000, n_jobs=-1):
         return j, _df
 
     # Initialize variables
-    df = np.full(res.shape[1], np.nan, dtype=np.float64)  # Array to store degrees of freedom
+    df = np.full(res.shape[1], np.nan, dtype=np.float32)  # Array to store degrees of freedom
     # First pass: Fit the degree of freedom for each column of the data matrix
     ## if pv is too large, replace with np.nan --> it means it did not converge
     results = Parallel(n_jobs=n_jobs)(delayed(first_pass)(j) for j in tqdm.trange(res.shape[1]))
@@ -444,8 +444,8 @@ def _fit_t(res, max_df=100000, n_jobs=-1):
         return j, _mu, _sigma
 
     # Initialize variables
-    mu = np.full(res.shape[1], np.nan, dtype=np.float64)
-    sigma = np.full(res.shape[1], np.nan, dtype=np.float64)
+    mu = np.full(res.shape[1], np.nan, dtype=np.float32)
+    sigma = np.full(res.shape[1], np.nan, dtype=np.float32)
     # Second pass, fit distribution now using df
     results = Parallel(n_jobs=n_jobs)(delayed(second_pass)(j) for j in tqdm.trange(res.shape[1]))
     for j, _mu, _sigma in results:
@@ -471,8 +471,8 @@ def get_pv_t(res, sigma, mu, df0, how='two-sided', n_jobs=-1):
         pv, z = _get_pv_t_base(x, mu=_mu, sigma=_sigma, df=df0, how=how)
         return j, pv, z
 
-    pv_t = np.full_like(res, np.nan, dtype=np.float64)  # Matrix to store p-values
-    z_scores = np.full_like(res, np.nan, dtype=np.float64)  # Matrix to store z-scores
+    pv_t = np.full_like(res, np.nan, dtype=np.float32)  # Matrix to store p-values
+    z_scores = np.full_like(res, np.nan, dtype=np.float32)  # Matrix to store z-scores
     results = Parallel(n_jobs=n_jobs)(delayed(process_column_with_df)(j) for j in tqdm.trange(res.shape[1]))
     for j, pv, z in results:
         pv_t[:, j] = pv

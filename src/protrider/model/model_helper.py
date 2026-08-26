@@ -97,7 +97,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         
                 if mu is None:
                     # Fitting NB for outrider if it is not set yet
-                    model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float64), torch.tensor(df_res.T.values, dtype=torch.float64))
+                    model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float32), torch.tensor(df_res.T.values, dtype=torch.float32))
                     mu, theta = model.get_dispersion_parameters()"""
             pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
                                  res=np.asarray(res),

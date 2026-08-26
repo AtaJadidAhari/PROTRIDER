@@ -438,7 +438,7 @@ class NegativeBinomialLoss(nn.Module):
             raise ValueError("Theta must be provided for NB loss")
         
         if not isinstance(theta, torch.Tensor):
-            theta = torch.tensor(theta, dtype=torch.float64, device=x_true.device)
+            theta = torch.tensor(theta, dtype=torch.float32, device=x_true.device)
         
         # Ensure theta has the right shape (1, genes) for broadcasting
         if theta.dim() == 1:

@@ -82,8 +82,8 @@ def estimate_rho_robust_moments(K: torch.Tensor, N: torch.Tensor, rho_min: float
         rho : tensor (junctions,)
     """
 
-    K = K.to(torch.float64) + pseudo_count
-    N = N.to(torch.float64) + 2 * pseudo_count
+    K = K.to(torch.float32) + pseudo_count
+    N = N.to(torch.float32) + 2 * pseudo_count
 
     # equalize n across samples (per junction)
     nM = torch.round(N.mean(dim=1))                     # (junctions,)

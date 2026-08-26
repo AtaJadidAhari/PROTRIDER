@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def _numeric_overrides(path, sep, compression, nrows=20):
     """Pin numeric columns' dtypes from a preview: whole-number columns become
-    int32 (instead of defaulting to float64), other numeric columns float32."""
+    int32 (instead of defaulting to float32), other numeric columns float32."""
     preview = pd.read_csv(path, sep=sep, compression=compression, nrows=nrows)
     return {
         col: "int32" if preview[col].dropna().mod(1).eq(0).all() else "float32"
