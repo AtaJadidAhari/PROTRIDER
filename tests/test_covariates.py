@@ -312,7 +312,7 @@ class TestDataConsistency:
         assert isinstance(centered_covariates, np.ndarray)
         
         # Original covariates preserve original dtype (int64 for AGE)
-        # Centered covariates become float64 due to arithmetic operations
+        # Centered covariates become float32 due to arithmetic operations
         assert np.issubdtype(covariates.dtype, np.integer) or np.issubdtype(covariates.dtype, np.floating)
         assert np.issubdtype(centered_covariates.dtype, np.floating)
 
