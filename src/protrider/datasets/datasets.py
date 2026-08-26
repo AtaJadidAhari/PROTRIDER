@@ -1,32 +1,33 @@
 from __future__ import annotations
 
-from typing import Iterable, Optional, Callable, Union, List
-from warnings import filters
-#from dpath import values
-import numpy as np
-import torch
-from torch.utils.data import Dataset, Subset
 import copy
-from abc import ABC
-from optht import optht
 import logging
-from .covariates import parse_covariates
-from .protein_intensities import read, preprocess_protein_intensities, merge_split_reads, merge_unsplit_reads
-from pydeseq2.preprocessing import deseq2_norm
-import pandas as pd
 import re
 #from pathlib import Path
 #import torch.nn.functional as F
 import time
+from abc import ABC
+from typing import Callable, Iterable, List, Optional, Union
+from warnings import filters
+
+#from dpath import values
+import numpy as np
+import pandas as pd
 import pyranges as pr
+import torch
+from optht import optht
+from pydeseq2.preprocessing import deseq2_norm
+from torch.utils.data import Dataset, Subset
 
-
+from .covariates import parse_covariates
+from .protein_intensities import (merge_split_reads, merge_unsplit_reads,
+                                  preprocess_protein_intensities, read)
 
 logger = logging.getLogger(__name__)
 
 class PCADataset(ABC):
     def __init__(self):
-        # centered log data around the protein means
+        # centered log data around the means
         self.centered_log_data_noNA = None
         self.U = None
         self.s = None
@@ -97,7 +98,7 @@ class ProtriderDataset(Dataset, PCADataset):
             self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
 
         
-        # store protein means
+        # store means
         self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
 
         ## Center and mask NaNs in input
@@ -235,7 +236,7 @@ class OutriderDataset(Dataset, PCADataset):
 
         #### FINISHED PREPROCESSING
 
-        # store protein means
+        # store means
         self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
 
         ## Center and mask NaNs in input

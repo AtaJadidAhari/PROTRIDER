@@ -1,19 +1,19 @@
 import copy
+import logging
+from dataclasses import dataclass
 from typing import Optional
 
-import torch
-from torch.special import gammaln
-import torch.nn as nn
-import torch.nn.functional as F
-
-from tqdm import tqdm
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-import logging
-from ..dispersions import Dispersion, NegativeBinomialDistribution
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.special import gammaln
+from tqdm import tqdm
 
 from protrider.datasets import ProtriderSubset
+
+from ..dispersions import Dispersion, NegativeBinomialDistribution
 
 logger = logging.getLogger(__name__)
 #logging.basicConfig(
@@ -39,9 +39,10 @@ class ModelInfo:
         Args:
             out_dir: Output directory path
         """
-        import pandas as pd
         import dataclasses
         from pathlib import Path
+
+        import pandas as pd
         
         logger.info('=== Saving model info ===')
         
@@ -99,6 +100,7 @@ class ModelInfo:
             >>> model_info.plot_training_loss(out_dir='output/')  # Save plot
         """
         from protrider import plots
+
         # Build train_losses DataFrame
         train_losses_df = pd.DataFrame({
             'epoch': range(1, len(self.train_losses) + 1),
@@ -140,7 +142,7 @@ class ConditionalEnDecoder(nn.Module):
             modules.append(last_layer)
             self.model = nn.Sequential(*modules)
 
-        # if the model is a decoder, then the bias should be initialized to the protein means
+        # if the model is a decoder, then the bias should be initialized to the means
         if not is_encoder and omic_means is not None:
             last_layer.bias.data.copy_(omic_means).squeeze(0)
 

@@ -469,6 +469,7 @@ class Result:
             >>> result.plot_pvals(out_dir='output/')  # Save plots
         """
         from . import plots
+
         # Pass the one-sided p-values DataFrame
         pvals_one_sided = self.df_pvals_one_sided if hasattr(self, 'df_pvals_one_sided') else None
         return plots.plot_pvals(
@@ -495,6 +496,7 @@ class Result:
             >>> result.plot_aberrant_per_sample(out_dir='output/')  # Save plot
         """
         from . import plots
+
         # Build protrider_summary DataFrame on the fly
         ae_out = self.df_out
         ae_in = self.dataset.data
@@ -566,6 +568,7 @@ class Result:
             >>> result.plot_expected_vs_observed('PROT123', out_dir='output/')  # Save plot
         """
         from . import plots
+
         # Prepare data for plotting - transpose to match expected format
         processed_input = self.dataset.data.T.reset_index()
         processed_input.columns.name = None

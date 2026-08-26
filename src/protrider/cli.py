@@ -1,13 +1,13 @@
-from collections import defaultdict
-
-import yaml
-from pathlib import Path
-import click
 import logging
+from collections import defaultdict
+from pathlib import Path
 
-from .pipeline import run as run_pipeline
-from .config import load_config
+import click
+import yaml
+
 from . import plots
+from .config import load_config
+from .pipeline import run as run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +258,6 @@ def run(config_path: str):
     model_info.save(config.out_dir)
     # Save config
     config.save(config.out_dir)
-
 
 if __name__ == '__main__':
     cli(obj={})
