@@ -49,6 +49,54 @@ Tests for output consistency and edge cases:
 - Configuration save/load
 - Report options
 
+## FRASER Tests (`FRASER/`)
+
+Tests validating the FRASER (splicing outlier) port against R reference outputs:
+
+### `test_data.py` (6 tests)
+- K/N counts vs. R reference
+- Expression filter vs. R reference
+- Final filter count vs. R reference
+- Logit transform vs. R reference
+- Calculate counts matches K and N
+- Jaccard index equals K over N
+
+### `test_annotations.py` (1 test)
+- Junction/gene annotation matches R reference
+
+### `test_model.py` (5 tests)
+- PCA reconstruction matches R predicted means
+- Dispersion fit correlates with R rho
+- Optimal SVHT coefficient matches R reference
+- Median Marchenko-Pastur matches R reference
+- OHT latent dimension finder recovers known rank
+
+### `test_stats.py` (6 tests, 3 skipped)
+- Beta-binomial p-values match R reference
+- Holm p-value adjustment matches R reference
+- Gene-level p-value shape matches number of genes
+- *(skipped)* Beta-binomial p-value randomization — placeholder, nothing to test yet
+- *(skipped)* Padj with rho cutoff — `adjust_pvals` has no `rhoCutoff` parameter yet
+- *(skipped)* Padj on gene subset — no per-sample gene-subset FDR correction implemented yet
+
+### `test_pipeline.py` (2 tests)
+- End-to-end run with file path inputs
+- Save results in long format
+
+### `test_counting.py` (4 tests, all skipped)
+BAM-level counting is not implemented in protrider; kept as explicit skips rather than omitted:
+- *(skipped)* Count junctions from BAM
+- *(skipped)* Strand-specific counting from BAM
+- *(skipped)* Min anchor length for non-split counting
+- *(skipped)* PSI values from BAM counts — only the Jaccard metric is supported
+
+### `test_unported_features.py` (4 tests, all skipped)
+Features with no corresponding protrider behavior to test against; kept as explicit skips rather than omitted:
+- *(skipped)* Junction distance plot — plotting is PROTRIDER/OUTRIDER-shaped
+- *(skipped)* Sample results plot — plotting is PROTRIDER/OUTRIDER-shaped
+- *(skipped)* Seqlevels-style conversion — no chromosome naming conversion
+- *(skipped)* Full link table — no UCSC/IGV/gnomAD hyperlink column builder
+
 ## Running Tests
 
 ```bash
