@@ -37,7 +37,7 @@ def test_dispersion_fit_correlates_with_r_rho(fraser_dataset_unfiltered, r_rho):
     _, rho_fit = model.get_dispersion_parameters()
 
     corr = np.corrcoef(rho_fit, r_rho.values.squeeze())[0, 1]
-    assert corr >= 0.6, f"Fitted rho should correlate with FRASER-R's rho.csv, got corr={corr:.3f}"
+    assert corr >= 0.999, f"Fitted rho should correlate with FRASER-R's rho.csv, got corr={corr:.3f}"
 
 
 def test_optimal_svht_coef_matches_r_reference():

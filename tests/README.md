@@ -83,6 +83,13 @@ Tests validating the FRASER (splicing outlier) port against R reference outputs:
 - End-to-end run with file path inputs
 - Save results in long format
 
+### `test_r_python_top_outliers.py` (2 tests)
+End-to-end comparison against a real `fraser_run_timed.R` run (not just checked-in reference
+CSVs), ranking junction/sample pairs purely by raw p-value instead of `detect_outliers()`'s
+3-criterion rule:
+- Top-20-by-raw-pvalue junction/sample pairs match R's, as a set
+- Raw p-values for those shared pairs are numerically close to R's
+
 ### `test_counting.py` (4 tests, all skipped)
 BAM-level counting is not implemented in protrider; kept as explicit skips rather than omitted:
 - *(skipped)* Count junctions from BAM
