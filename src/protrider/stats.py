@@ -3,10 +3,8 @@ import pandas as pd
 import scipy
 import tqdm
 import torch
-from joblib import Parallel, delayed, effective_n_jobs
+from joblib import Parallel, delayed
 import logging
-from statsmodels.stats.multitest import multipletests
-from collections import defaultdict
 
 
 __all__ = ["fit_residuals", "get_pvals", "adjust_pvals", "get_pvals_per_gene"]
@@ -93,65 +91,10 @@ def explode_junctions(pvals, group_ids):
     return expanded, origin_idx, exploded_groups.to_numpy()
 
 
-# def adjust_pvals(pvals, method='bh', group_ids=None, n_jobs=-1, aggregate=False):
-#     if method == 'holm':
-#         if aggregate:
-#             if group_ids is None:
-#                 raise ValueError("group_ids must be provided for Holm's correction on junction level.")
-#             junction_pvals_adj, _ = adjust_pvals(pvals, method='holm', group_ids=None, n_jobs=n_jobs, aggregate=False)
-#             expanded_pvals, origin_idx, groups = explode_junctions(pvals, group_ids)
-#             input_was_numpy = isinstance(expanded_pvals, np.ndarray)
-#             if input_was_numpy:
-#                 expanded_pvals = pd.DataFrame(expanded_pvals.T)
-#             expanded_pvals_adj = expanded_pvals.copy().astype(float)
+def adjust_pvals(pvals, method='bh', group_ids=None, aggregate=False, n_jobs=-1, index=None, columns=None, transpose=False):
+    if not isinstance(pvals, pd.DataFrame):
+        pvals = pd.DataFrame(pvals.T if transpose else pvals, index=index, columns=columns)
 
-#             group_ids_arr = np.asarray(groups, dtype=object)
-#             unique_groups = np.unique(group_ids_arr[pd.notna(group_ids_arr)])
-
-#             def process_sample(sample):
-#                 col = expanded_pvals[sample].to_numpy(dtype=float)
-#                 result = col.copy()
-#                 kept_local_pos = {}  # group -> position (in expanded_pvals) of the junction kept for this sample
-#                 for group in unique_groups:
-#                     group_mask = group_ids_arr == group
-#                     group_pvals = col[group_mask]
-#                     valid = ~np.isnan(group_pvals)
-#                     if valid.sum() > 0:
-#                         adj = multipletests(group_pvals[valid], method='holm')[1]
-#                         tmp = result[group_mask]
-#                         tmp[valid] = adj
-#                         result[group_mask] = tmp
-#                         group_positions = np.where(group_mask)[0]
-#                         valid_positions = group_positions[valid]
-#                         kept_local_pos[group] = valid_positions[np.argmin(group_pvals[valid])]
-#                 return sample, result, kept_local_pos
-
-#             origin_junctions = pvals.index.to_numpy()[origin_idx]
-#             kept_junctions = pd.DataFrame(index=unique_groups, columns=list(expanded_pvals.columns), dtype=object)
-#             logger.info(f"Running Holm correction with {effective_n_jobs(n_jobs)} jobs across {len(expanded_pvals.columns)} samples.")
-#             for sample, result, kept_local_pos in Parallel(n_jobs=n_jobs)(delayed(process_sample)(s) for s in expanded_pvals.columns):
-#                 expanded_pvals_adj[sample] = result
-#                 for group, local_pos in kept_local_pos.items():
-#                     kept_junctions.loc[group, sample] = origin_junctions[local_pos]
-
-#             expanded_pvals_adj['hgncSymbol'] = group_ids_arr
-#             gene_pvals = expanded_pvals_adj.groupby('hgncSymbol').min()   # per-sample min
-#             gene_pvals = gene_pvals.loc[unique_groups]
-#             pvals_for_by = gene_pvals
-#         else:
-#             # Skip Holm — matches R behaviour for jaccard (each junction is its own group)
-#             pvals_for_by = pvals.copy().astype(float) if isinstance(pvals, pd.DataFrame) else pd.DataFrame(pvals, dtype=float)
-
-#         pvals_adj = perform_fdr_correction(pvals_for_by, method='by', axis=0)
-#         pvals_adj = pd.DataFrame(pvals_adj,index=pvals_for_by.index, columns=pvals_for_by.columns)
-#         logger.info("Adjusted p-values (BY) computed across unique sites.")
-#         return pvals_adj, ({'pvals_for_by': gene_pvals, 'kept_junctions': kept_junctions, 'junction_pvals_adj': junction_pvals_adj} if aggregate else None)   # pvals_for_by = pValueGene, pvals_adj = padjustGene
-
-#     else:
-#         pvals_adj = perform_fdr_correction(pvals, method=method, axis=1)
-#     return pvals_adj, None
-
-def adjust_pvals(pvals, method='bh', group_ids=None,  aggregate=False, n_jobs=-1):
     if method == 'holm':
         if aggregate:
             if group_ids is None:

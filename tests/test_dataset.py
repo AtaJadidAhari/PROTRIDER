@@ -1,5 +1,5 @@
 from protrider.datasets.covariates import parse_covariates
-from protrider.datasets.protein_intensities import read
+from protrider.datasets.read_inputs import read
 import pandas as pd
 
 

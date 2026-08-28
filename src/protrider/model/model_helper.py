@@ -82,23 +82,6 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
             X_out_df = pd.DataFrame(X_out, index=injected_dataset.data.index,
                                     columns=injected_dataset.data.columns)
             mu, sigma, df0, res = fit_residuals(injected_dataset, X_out_df, model_input, config)
-
-            """if model.model_type == "protrider":
-                res = X_in - X_out
-                mu, sigma, df0 = fit_residuals(res=res, dis=pval_dist, n_jobs=n_jobs)
-            elif model.model_type == "outrider":
-                df_out_clamped = np.clip(X_out, -700, 700)
-                df_res = np.exp(df_out_clamped) * dataset.size_factors
-                df_out = df_res
-                sigma = None
-                df0 = None
-        
-                mu, theta = model.get_dispersion_parameters()
-        
-                if mu is None:
-                    # Fitting NB for outrider if it is not set yet
-                    model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float32), torch.tensor(df_res.T.values, dtype=torch.float32))
-                    mu, theta = model.get_dispersion_parameters()"""
             pvals, Z = get_pvals(x_true=dataset.raw_filtered.values,
                                  res=np.asarray(res),
                                  mu=mu,

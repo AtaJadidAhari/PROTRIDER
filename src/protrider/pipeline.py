@@ -837,15 +837,10 @@ def _run_protrider_standard(
                                     n_jobs=config.n_jobs)
     timer.step('Computing p-values')
     group_ids = dataset.intron_ranges["gene_id"] if config.analysis == "fraser" else None
-    # TODO make it shorter!
-    if isinstance(pvals, pd.DataFrame):
-        pvals_for_adj = pvals
-    elif config.analysis == "fraser":
-        pvals_for_adj = pd.DataFrame(pvals.T, index=dataset.data.columns, columns=dataset.data.index)
-    else:
-        pvals_for_adj = pd.DataFrame(pvals, index=dataset.data.index, columns=dataset.data.columns)
-
-    pvals_adj, gene_level_info = adjust_pvals(pvals_for_adj, method=config.pval_adj, group_ids=group_ids, aggregate=True, n_jobs=config.n_jobs)
+    pvals_adj, gene_level_info = adjust_pvals(pvals, method=config.pval_adj, group_ids=group_ids, aggregate=True, n_jobs=config.n_jobs,
+                                              index=dataset.data.columns if config.analysis == "fraser" else dataset.data.index,
+                                              columns=dataset.data.index if config.analysis == "fraser" else dataset.data.columns,
+                                              transpose=config.analysis == "fraser")
     timer.step('Adjusting p-values')
     #  df_res for Fraser from here on is the actual delta psi
     df_res = np.round(dataset.jaccard_index.T - mu.T, decimals=2) if config.analysis == "fraser" else df_res
@@ -1051,15 +1046,10 @@ def _run_protrider_cv(
                                     n_jobs=config.n_jobs)
 
     group_ids = dataset.intron_ranges["gene_id"] if config.analysis == "fraser" else None
-    # TODO make it shorter!
-    if isinstance(pvals, pd.DataFrame):
-        pvals_for_adj = pvals
-    elif config.analysis == "fraser":
-        pvals_for_adj = pd.DataFrame(pvals.T, index=dataset.data.columns, columns=dataset.data.index)
-    else:
-        pvals_for_adj = pd.DataFrame(pvals, index=dataset.data.index, columns=dataset.data.columns)
-
-    pvals_adj, gene_level_info = adjust_pvals(pvals_for_adj, method=config.pval_adj, group_ids=group_ids, aggregate=True, n_jobs=config.n_jobs)
+    pvals_adj, gene_level_info = adjust_pvals(pvals, method=config.pval_adj, group_ids=group_ids, aggregate=True, n_jobs=config.n_jobs,
+                                              index=dataset.data.columns if config.analysis == "fraser" else dataset.data.index,
+                                              columns=dataset.data.index if config.analysis == "fraser" else dataset.data.columns,
+                                              transpose=config.analysis == "fraser")
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
                              pvals=pvals, Z=Z, pvals_one_sided=pvals_one_sided, pvals_adj=pvals_adj,
                              pseudocount=config.pseudocount, outlier_threshold=config.outlier_threshold,

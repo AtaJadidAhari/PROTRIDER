@@ -289,7 +289,7 @@ class TestDataConsistency:
     
     def test_consistency_with_protein_data(self, covariates_path, protein_intensities_path, protein_intensities_index_col):
         """Test that covariate parsing is consistent with protein intensity data."""
-        from protrider.datasets.protein_intensities import read
+        from protrider.datasets.read_inputs import read
         
         # Read protein intensities to get sample count
         protein_intensities_path = [protein_intensities_path]

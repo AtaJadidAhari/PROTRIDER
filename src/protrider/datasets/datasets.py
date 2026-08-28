@@ -3,14 +3,11 @@ from __future__ import annotations
 import copy
 import logging
 import re
-#from pathlib import Path
-#import torch.nn.functional as F
 import time
 from abc import ABC
 from typing import Callable, Iterable, List, Optional, Union
-from warnings import filters
 
-#from dpath import values
+
 import numpy as np
 import pandas as pd
 import pyranges as pr
@@ -20,7 +17,7 @@ from pydeseq2.preprocessing import deseq2_norm
 from torch.utils.data import Dataset, Subset
 
 from .covariates import parse_covariates
-from .protein_intensities import (merge_split_reads, merge_unsplit_reads,
+from .read_inputs import (merge_split_reads, merge_unsplit_reads,
                                   preprocess_protein_intensities, read)
 
 logger = logging.getLogger(__name__)

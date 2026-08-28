@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from protrider.datasets import ProtriderSubset
 
-from ..dispersions import Dispersion, NegativeBinomialDistribution
+from ..dispersions import Dispersion
 
 logger = logging.getLogger(__name__)
 #logging.basicConfig(

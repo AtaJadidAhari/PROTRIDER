@@ -21,17 +21,20 @@ def _numeric_overrides(path, sep, compression, nrows=20):
 
 
 def read(input_intensities: str, index_col: str = None, input_format: str = "proteins_as_rows") -> pd.DataFrame:
-    """Read protein intensities from a file.
-    
+    """Read omics measurements (e.g. protein intensities, RNA-seq counts) from one
+    or more files and concatenate them.
+
     Args:
-        input_intensities: Path to file (CSV, TSV, or Parquet)
-        index_col: Name of the index column containing protein IDs
-        input_format: Format of the input file:
-                     - "proteins_as_rows": proteins are rows, samples are columns (default)
-                     - "proteins_as_columns": samples are rows, proteins are columns
-    
+        input_intensities: List of paths to files (CSV, TSV, or Parquet). Files are
+                            concatenated along the feature/sample axis given by
+                            input_format.
+        index_col: Name of the index column containing feature IDs
+        input_format: Format of the input files:
+                     - "proteins_as_rows": features are rows, samples are columns (default)
+                     - "proteins_as_columns": samples are rows, features are columns
+
     Returns:
-        pd.DataFrame: Protein intensities with samples as rows and proteins as columns
+        pd.DataFrame: Data with samples as rows and features as columns
     """
     intensities = []
     for input_intensity in input_intensities:

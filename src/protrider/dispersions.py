@@ -1,8 +1,5 @@
 import abc
 from typing import Optional
-import numpy as np
-import scipy.stats
-from scipy.optimize import minimize_scalar
 import torch
 import torch.optim as optim
 import torch.nn as nn
