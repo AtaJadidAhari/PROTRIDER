@@ -7,7 +7,6 @@ import time
 from abc import ABC
 from typing import Callable, Iterable, List, Optional, Union
 
-
 import numpy as np
 import pandas as pd
 import pyranges as pr
@@ -18,7 +17,7 @@ from torch.utils.data import Dataset, Subset
 
 from .covariates import parse_covariates
 from .read_inputs import (merge_split_reads, merge_unsplit_reads,
-                                  preprocess_protein_intensities, read)
+                          preprocess_protein_intensities, read)
 
 logger = logging.getLogger(__name__)
 
@@ -192,68 +191,60 @@ class OutriderDataset(Dataset, PCADataset):
     def __init__(self, input_intensities: str, index_col: str,
                  sa_file: Optional[str] = None,
                  cov_used: Optional[list] = None, log_func: Callable = np.log,
-                 fpkm_cutoff: int = 1, gtf: str = None,
+                 fpkm_cutoff: float = 1, gtf: str = None,
                  device: torch.device = torch.device('cpu'),
-                 input_format: str = "proteins_as_rows", **kwargs):
+                 input_format: str = "genes_as_rows",
+                 fpkm_percentile: float = 0.95,
+                 **kwargs):
         super().__init__()
-
-        # Read and preprocess protein intensities
-        self.data = read(input_intensities, index_col)
-        # self.data, self.raw_data, self.size_factors = preprocess_protein_intensities(
-        #     unfiltered_data, log_func, maxNA_filter
-        # )
-
         self.device = device
-        self.data.index.names = ['sampleID']
-        self.data.columns.name = 'proteinID'
         self.gtf = gtf
-        logger.info(f'Finished reading raw data with shape: {self.data.shape}')
+        # Unlike proteomics, zero is an observed RNA-seq count, not missing.
+        raw = read(input_intensities, index_col, input_format)
+        raw.index.name, raw.columns.name = "sampleID", "geneID"
+        values = raw.to_numpy(dtype=np.float32)
+        if not np.isfinite(values).all():
+            raise ValueError("OUTRIDER counts must be finite; missing counts are not supported.")
+        if (values < 0).any() or not np.equal(values, np.floor(values)).all():
+            raise ValueError("OUTRIDER counts must be non-negative integers.")
+        self.raw_counts_unfiltered = raw.astype(np.int64)
+        self.raw_data = self.raw_counts_unfiltered  # Alias retained for existing callers.
+        _, size_factors = deseq2_norm(self.raw_counts_unfiltered)
+        self.size_factors_array = np.asarray(size_factors, dtype=np.float32).reshape(-1, 1)
+        if not np.isfinite(self.size_factors_array).all() or (self.size_factors_array <= 0).any():
+            raise ValueError("OUTRIDER size factors must be finite and positive.")
 
-        self.raw_data = copy.deepcopy(self.data)  ## for storing output
+        if fpkm_cutoff is None:
+            self.fpkms = None
+            self.passed_filter = pd.Series(True, index=raw.columns)
+        else:
+            if not gtf:
+                raise ValueError("A GTF is required for OUTRIDER FPKM filtering.")
+            self.fpkms = self.calculate_fpkm(self.raw_counts_unfiltered.T, self.gene_exonic_lengths_from_gtf(gtf))
+            _, self.passed_filter = self.filter_genes_by_fpkm(
+                self.fpkms.T.reindex(columns=raw.columns), fpkm_cutoff, fpkm_percentile)
+        if not self.passed_filter.index.equals(raw.columns):
+            raise RuntimeError("OUTRIDER FPKM filtering lost gene-ID alignment.")
+        self.raw_counts_filtered = self.raw_counts_unfiltered.loc[:, self.passed_filter]
+        if self.raw_counts_filtered.shape[1] == 0:
+            raise ValueError("OUTRIDER FPKM filtering removed every gene.")
+        self.raw_filtered = self.raw_counts_filtered
 
-        # normalize data
-        _, size_factors = deseq2_norm(self.data.replace(np.nan, 0))
-        self.size_factors = size_factors[:, np.newaxis]
-
-
-        # filter based on fpkm
-        logger.info(f'Calculating fpkms')
-
-        gene_lengths_df = self.gene_exonic_lengths_from_gtf(self.gtf)
-        self.fpkms = self.calculate_fpkm(self.raw_data.T, gene_lengths_df)
-
-        logger.info(f'Filtering based on fpkm')
-        _, self.passed_filter = self.filter_genes_by_fpkm(self.fpkms.T, fpkm_cutoff=fpkm_cutoff, percentage=0.05)
-        self.data = self.data.loc[:, self.passed_filter.values]
-
-        self.raw_filtered = copy.deepcopy(self.data)  ## for storing output/plotting
-        # normalize with size_factors
-        self.data = np.log((1 + self.data) / self.size_factors)
-
-
-        #### FINISHED PREPROCESSING
-
-        # store means
-        self.omic_means = np.nanmean(self.data, axis=0, keepdims=1)
-
-        ## Center and mask NaNs in input
-        self.mask = ~np.isfinite(self.data)
-        self.centered_log_data_noNA = self.data - self.omic_means
-        self.centered_log_data_noNA = np.where(self.mask, 0, self.centered_log_data_noNA)
-
-        omic_means_df = pd.DataFrame({"xbar": np.ravel(self.omic_means), "geneID": self.data.columns})
-        # Input and output of autoencoder is:
-        # uncentered data without NaNs, replacing NANs with means
-        # self.X = self.centered_log_data_noNA + self.omic_means  ## same as data but without NAs
-        self.X = self.centered_log_data_noNA
-
-        ## to torch
-        self.X = torch.tensor(self.X)
-        self.raw_x = torch.tensor(self.raw_filtered.values)
-
-        self.mask = np.array(self.mask.values)
+        # Transform raw counts to log-normalized values, then centre each gene.
+        self.normalized_log_counts = pd.DataFrame(
+            np.asarray(np.log((self.raw_counts_filtered.to_numpy(dtype=np.float32) + 1.0) / self.size_factors_array), dtype=np.float32),
+            index=raw.index, columns=self.raw_counts_filtered.columns,
+        )
+        self.gene_means = self.normalized_log_counts.mean(axis=0).astype(np.float32)
+        self.data = self.normalized_log_counts
+        self.omic_means = self.gene_means.to_numpy()[None, :]
+        self.centered_input = self.normalized_log_counts.subtract(self.gene_means, axis=1)
+        self.centered_log_data_noNA = self.centered_input.to_numpy(dtype=np.float32)
+        self.mask = np.zeros_like(self.centered_log_data_noNA, dtype=bool)
+        self.X = torch.as_tensor(self.centered_log_data_noNA, dtype=torch.float32)
+        self.raw_x = torch.as_tensor(self.raw_counts_filtered.to_numpy(dtype=np.float32), dtype=torch.float32)
         self.torch_mask = torch.tensor(self.mask)
-        self.omic_means_torch = torch.from_numpy(self.omic_means).squeeze(0)
+        self.omic_means_torch = torch.as_tensor(self.omic_means.squeeze(0), dtype=torch.float32)
 
         # Read and preprocess covariates
         if sa_file is not None and cov_used is not None:
@@ -282,7 +273,7 @@ class OutriderDataset(Dataset, PCADataset):
         self.raw_covariates = self.raw_covariates.to(device)
         self.omic_means_torch = self.omic_means_torch.to(device)
         self.raw_x = self.raw_x.to(device)
-        self.size_factors = torch.tensor(self.size_factors).to(device)
+        self.size_factors = torch.as_tensor(self.size_factors_array, dtype=torch.float32, device=device)
         # self.presence = (~self.torch_mask).long()
 
     def __len__(self):
@@ -291,29 +282,27 @@ class OutriderDataset(Dataset, PCADataset):
     def __getitem__(self, idx):
         return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, self.raw_x[idx], self.size_factors[idx])
 
-    def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentage=0.05):
+    def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentile=0.95):
         """
-        Filters genes based on minimum FPKM in at least 5% of samples.
+        Retain genes when their upper-tail FPKM exceeds the cutoff.  The default
+        is ``quantile(FPKM[g, :], .95) > cutoff``, i.e. above cutoff in the
+        upper 5% of samples.
 
         Parameters:
             fpkm_matrix (pd.DataFrame): samples × genes (rows are samples, columns are genes)
             min_fpkm (float): Minimum FPKM threshold
-            percentage (float): Fraction of samples that must pass the threshold
+            percentile (float): Per-gene FPKM quantile to compare with cutoff
 
         Returns:
             passed_filter (pd.Series): Boolean mask for each gene (index = gene names)
             filtered_matrix (pd.DataFrame): Matrix after filtering (samples × genes)
         """
-        # Number of samples (rows)
-        n_samples = fpkm_matrix.shape[0]
-
-        # Minimum number of samples a gene must pass the threshold in
-        min_samples = max(1.0, percentage * n_samples)
-
-        # Boolean mask: for each gene (column), count how many samples (rows) have FPKM ≥ min_fpkm
-        passed_filter = (fpkm_matrix > fpkm_cutoff).sum(axis=0) >= min_samples
-
-        logger.info(f"{len(passed_filter) - passed_filter.sum()} genes out of {len(passed_filter)} are filtered out. New shape: ({n_samples}, {passed_filter.sum()})")
+        if not isinstance(fpkm_matrix, pd.DataFrame):
+            raise TypeError("FPKM filtering requires a labelled samples x genes DataFrame.")
+        passed_filter = fpkm_matrix.quantile(percentile, axis=0) > fpkm_cutoff
+        logger.info("%s genes out of %s are filtered out. New shape: (%s, %s)",
+                    len(passed_filter) - passed_filter.sum(), len(passed_filter),
+                    fpkm_matrix.shape[0], passed_filter.sum())
 
         # Apply filter to keep only columns (genes) that passed
         filtered_matrix = fpkm_matrix.loc[:, passed_filter]
@@ -408,19 +397,42 @@ class OutriderDataset(Dataset, PCADataset):
         lengths = lengths_df.set_index("gene_id")["exonic_length"]
         expr_df = expr_df.copy()
 
-        # make sure order matches
-        expr_df = expr_df.loc[expr_df.index.intersection(lengths.index)]
-        lengths = lengths.loc[expr_df.index]
+        missing = expr_df.index.difference(lengths.index)
+        if len(missing):
+            logger.warning("%s count genes are absent from the GTF and will be filtered out: %s",
+                           len(missing), ", ".join(map(str, missing[:10])))
+        # Preserve every count gene and let absent lengths yield FPKM=0.  Never
+        # shorten a labelled mask and then apply it positionally.
+        lengths = lengths.reindex(expr_df.index)
 
         if robust is False:
             library_size = expr_df.sum(axis=0)
         else:
-            library_size = self.size_factors.T * np.exp(np.mean(np.log(expr_df.sum(axis=0))))
+            library_size = pd.Series(
+                self.size_factors_array.ravel() * np.exp(np.mean(np.log(expr_df.sum(axis=0).clip(lower=1)))),
+                index=expr_df.columns,
+            )
 
-        fpkm = expr_df.div(lengths, axis=0) * 1e9
+        fpkm = expr_df.div(lengths.replace(0, np.nan), axis=0) * 1e9
         fpkm = fpkm.div(library_size, axis=1)
+        return fpkm.fillna(0.0).astype(np.float32)
 
-        return fpkm
+    def find_enc_dim_optht(self):
+        """Estimate the latent dimension with optimal hard thresholding."""
+        if self.s is None:
+            self.perform_svd()
+        n, p = self.centered_log_data_noNA.shape
+        beta = min(n, p) / max(n, p)
+        omega = np.sqrt(2 * (beta + 1) + 8 * beta /
+                        ((beta + 1) + np.sqrt(beta ** 2 + 14 * beta + 1)))
+        self.oht_threshold = float(omega * np.median(self.s))
+        q = int(np.sum(self.s > self.oht_threshold))
+        self.oht_diagnostics = {"singular_values": self.s.copy(), "threshold": self.oht_threshold, "q": q}
+        if q == 0:
+            logger.warning("No singular value passed OUTRIDER OHT; falling back to q=2.")
+            q = 2
+            self.oht_diagnostics["q"] = q
+        return q
 
 class OmicDataset(Dataset):
     def __new__(cls, analysis, *args, **kwargs):

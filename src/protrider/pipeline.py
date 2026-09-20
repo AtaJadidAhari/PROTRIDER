@@ -26,7 +26,7 @@ __all__ = ["run"]
 logger = logging.getLogger(__name__)
 
 
-def save_model(model: OmicAutoencoder, checkpoint_path: str, q: int) -> None:
+def save_model(model: OmicAutoencoder, checkpoint_path: str, q: int, dataset=None) -> None:
     """Save model state dict and metadata to checkpoint path.
     
     Args:
@@ -38,12 +38,22 @@ def save_model(model: OmicAutoencoder, checkpoint_path: str, q: int) -> None:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Save model state dict and metadata
-    torch.save({
+    checkpoint = {
         'model_state_dict': model.state_dict(),
         'q': q,
         'n_layers': model.n_layers,
         'presence_absence': model.presence_absence,
-    }, checkpoint_path)
+        'model_type': model.model_type,
+        'theta': model.get_dispersion_parameters()[1] if hasattr(model, 'dispersion') else None,
+    }
+    if dataset is not None:
+        checkpoint.update({
+            'gene_ids': list(dataset.data.columns),
+            'n_covariates': int(dataset.covariates.shape[1]),
+            'gene_means': getattr(dataset, 'gene_means', None).to_numpy() if hasattr(dataset, 'gene_means') else None,
+            'oht_diagnostics': getattr(dataset, 'oht_diagnostics', None),
+        })
+    torch.save(checkpoint, checkpoint_path)
     
     logger.info(f'Saved model to {checkpoint_path}')
 
@@ -72,6 +82,14 @@ def load_model(dataset: Union[ProtriderDataset, ProtriderSubset], checkpoint_pat
         q = checkpoint['q']
         n_layers = checkpoint['n_layers']
         presence_absence = checkpoint.get('presence_absence', False)
+        model_type = checkpoint.get('model_type', config.analysis)
+        if model_type != config.analysis:
+            raise ValueError(f"checkpoint is for {model_type}, not {config.analysis}")
+        saved_genes = checkpoint.get('gene_ids')
+        if saved_genes is not None and list(dataset.data.columns) != saved_genes:
+            raise ValueError("checkpoint gene IDs/order do not match the input after filtering")
+        if checkpoint.get('n_covariates', dataset.covariates.shape[1]) != dataset.covariates.shape[1]:
+            raise ValueError("checkpoint covariate count does not match this input")
         
         logger.info(f'Loading model from {checkpoint_path} (q={q}, n_layers={n_layers})')
         
@@ -85,12 +103,22 @@ def load_model(dataset: Union[ProtriderDataset, ProtriderSubset], checkpoint_pat
             h_dim=config.h_dim, 
             n_cov=n_cov,
             prot_means=None,
-            presence_absence=presence_absence
+            presence_absence=presence_absence,
+            model_type=model_type,
         )
-        model.double().to(config.device_torch)
+        if model_type == 'outrider':
+            model.float()
+        else:
+            model.double()
+        model.to(config.device_torch)
         
         # Load state dict
         model.load_state_dict(checkpoint['model_state_dict'])
+        if model_type == 'outrider':
+            theta = checkpoint.get('theta')
+            if theta is None:
+                raise ValueError("OUTRIDER checkpoint has no matching theta")
+            model.dispersion.set_dispersion(torch.as_tensor(theta, dtype=torch.float32, device=config.device_torch))
         
         logger.info('Successfully loaded model')
         return model, q
@@ -137,6 +165,8 @@ class Result:
     # OUTRIDER results
     dispersions: pd.DataFrame = None # Dispersions for OUTRIDER or FRASER
     mu: pd.DataFrame = None # OUTRIDER mu
+    df_expected_counts: pd.DataFrame = None
+    df_raw_residuals: pd.DataFrame = None
     # FRASER results
     delta_psi_cutoff: float = 0.1  # Threshold for delta PSI (jaccard) for fraser
     min_count: int = 5  # Minimum total count threshold for fraser
@@ -333,6 +363,11 @@ class Result:
             self.df_res.T.to_csv(out_p, header=True, index=True)
             logger.info(f"Saved residuals to {out_p}")
 
+            if analysis == 'outrider' and self.df_expected_counts is not None:
+                out_p = f'{out_dir}/expected_counts.csv'
+                self.df_expected_counts.T.to_csv(out_p, header=True, index=True)
+                logger.info(f"Saved expected counts to {out_p}")
+
             # presence probabilities
             if self.df_presence is not None:
                 out_p = f'{out_dir}/presence_probs.csv'
@@ -392,10 +427,12 @@ class Result:
                 self.dispersions.to_csv(out_p, header=True, index=True)
                 logger.info(f"Saved thetas to to {out_p}")
 
-                # mu
-                out_p = f'{out_dir}/mu.csv'
-                self.mu.to_csv(out_p, header=True, index=True)
-                logger.info(f"Saved mus to to {out_p}")
+                # The decoder bias supplies each gene's baseline expression;
+                # write the fixed compatibility value only when it is present.
+                if self.mu is not None:
+                    out_p = f'{out_dir}/mu.csv'
+                    self.mu.to_csv(out_p, header=True, index=True)
+                    logger.info(f"Saved fixed OUTRIDER mu compatibility values to {out_p}")
 
             return None
             
@@ -420,6 +457,25 @@ class Result:
                 #log_peak_memory('after freeing gene long table')
 
                 return result
+
+            if analysis == 'outrider':
+                wide = {
+                    'GENE_EXPECTED_COUNT': self.df_expected_counts,
+                    'GENE_RAW_COUNT': self.dataset.raw_counts_filtered,
+                    'GENE_ZSCORE': self.df_Z,
+                    'GENE_PVALUE': self.df_pvals,
+                    'GENE_PADJ': self.df_pvals_adj,
+                    'GENE_LOG2FC': self.log2fc,
+                }
+                combined = pd.concat(wide, axis=1)
+                df_res = combined.stack(future_stack=True).reset_index()
+                df_res.columns = ['sampleID', 'geneID'] + list(wide)
+                df_res = self.finalize_long(df_res, prefix='GENE', analysis=analysis)
+                if not include_all:
+                    df_res = df_res.query('GENE_outlier==True')
+                out_p = f"{summary_dir}/{analysis}_summary.csv"
+                df_res.to_csv(out_p, index=False)
+                return df_res
 
             if self.df_pvals.shape != self.df_pvals_adj.shape:
                 self.df_pvals_adj = self.df_pvals_adj.T
@@ -729,6 +785,7 @@ def _run_protrider_standard(
                             log_func=config.log_func,
                             maxNA_filter=config.max_allowed_NAs_per_protein,
                             fpkm_cutoff=config.fpkmCutoff,
+                            fpkm_percentile=config.fpkm_percentile,
                             gtf=config.gtf,
                             device=config.device_torch,
                             input_format=config.input_format)
@@ -741,11 +798,14 @@ def _run_protrider_standard(
         checkpoint_path = Path(config.checkpoint_path)
     else:
         checkpoint_path = Path(config.out_dir) / 'model.pt'
+    model, q = load_model(dataset, str(checkpoint_path), config)
+    loaded_checkpoint = model is not None
 
     timer.step('Initializing dataset')
     # 2. Find latent dim
-    logger.info('Finding latent dimension')
-    q = find_latent_dim(dataset, method=config.find_q_method,
+    if q is None:
+        logger.info('Finding latent dimension')
+        q = find_latent_dim(dataset, method=config.find_q_method,
                         # Params for grid search method
                         inj_freq=config.inj_freq,
                         inj_mean=config.inj_mean,
@@ -765,21 +825,22 @@ def _run_protrider_standard(
                         model_type=config.analysis,
                         loss_fn=config.autoencoder_loss,
                         n_jobs=config.n_jobs,
-                        config=config,
-                        )
+                            config=config,
+                            )
 
     logger.info(
         f'Latent dimension found with method {config.find_q_method}: {q}')
     timer.step('Finding latent dimension')
     # 3. Init model with found latent dim
-    model = init_model(dataset, q,
+    if model is None:
+        model = init_model(dataset, q,
                        init_wPCA=config.init_pca,
                        n_layer=config.n_layers,
                        h_dim=config.h_dim,
                        device=config.device_torch,
                        presence_absence=config.presence_absence if config.n_layers == 1 else False,
-                       model_type=config.analysis
-                       )
+                           model_type=config.analysis
+                           )
     
     criterion = model.set_loss(autoencoder_loss = config.autoencoder_loss, lambda_presence_absence = config.lambda_presence_absence) 
     logger.info('Model:\n%s', model)
@@ -794,19 +855,20 @@ def _run_protrider_standard(
 
     final_loss = 10**4
     train_losses = []
-    if config.autoencoder_training:
+    if config.autoencoder_training and not loaded_checkpoint:
         logger.info('Fitting model')
-        _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config.n_epochs, learning_rate=float(config.lr), batch_size=config.batch_size)
+        _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config.n_epochs,
+                                      learning_rate=float(config.lr), batch_size=config.batch_size)
         timer.step('Fitting model')
 
         df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion, batch_size=config.batch_size)
         logger.info('Final loss: %s, mse loss: %s, bce loss: %s', final_loss, final_reconstruction_loss, final_bce_loss)
         timer.step('Computing final loss')
-        save_model(model, str(checkpoint_path), q)
+        save_model(model, str(checkpoint_path), q, dataset)
         timer.step('Saving model')
     else:
         final_loss = init_loss
-        timer.step('Model fitting skipped')
+        timer.step('Model fitting skipped (checkpoint loaded)' if loaded_checkpoint else 'Model fitting skipped')
 
     # 6. Compute residuals, pvals, zscores
     logger.info('Computing statistics')
@@ -837,13 +899,23 @@ def _run_protrider_standard(
                                     n_jobs=config.n_jobs)
     timer.step('Computing p-values')
     group_ids = dataset.intron_ranges["gene_id"] if config.analysis == "fraser" else None
-    pvals_adj, gene_level_info = adjust_pvals(pvals, method=config.pval_adj, group_ids=group_ids, aggregate=True, n_jobs=config.n_jobs,
+    pvals_adj, gene_level_info = adjust_pvals(pvals, method=config.pval_adj, group_ids=group_ids,
+                                              aggregate=config.analysis == "fraser", n_jobs=config.n_jobs,
                                               index=dataset.data.columns if config.analysis == "fraser" else dataset.data.index,
                                               columns=dataset.data.index if config.analysis == "fraser" else dataset.data.columns,
                                               transpose=config.analysis == "fraser")
     timer.step('Adjusting p-values')
     #  df_res for Fraser from here on is the actual delta psi
-    df_res = np.round(dataset.jaccard_index.T - mu.T, decimals=2) if config.analysis == "fraser" else df_res
+    if config.analysis == "fraser":
+        df_res = np.round(dataset.jaccard_index.T - mu.T, decimals=2)
+    elif config.analysis == "outrider":
+        # fit_residuals returns the expected-count matrix for NB scoring.  The
+        # public residual field now has its literal observed-minus-expected
+        # meaning; df_expected_counts retains the scoring matrix explicitly.
+        df_expected_counts = df_res.copy()
+        df_res = dataset.raw_counts_filtered - df_expected_counts
+    else:
+        df_expected_counts = None
 
     result = _format_results(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence,
                              pvals=pvals, Z=Z, pvals_one_sided=pvals_one_sided, pvals_adj=pvals_adj,
@@ -851,7 +923,8 @@ def _run_protrider_standard(
                              delta_psi_cutoff = config.delta_psi_threshold, min_count=config.min_count,
                              base_fn=config.base_fn, pval_dist=config.pval_dist,
                              gene_level_info=gene_level_info, latent_values=latent_values,
-                             dispersions=theta, mu=mu)
+                             dispersions=theta, mu=mu,
+                             expected_counts=df_expected_counts if config.analysis == "outrider" else None)
     model_info = ModelInfo(q=np.array(q), learning_rate=np.array(config.lr),
                            n_epochs=np.array(config.n_epochs), test_loss=np.array(final_loss),
                            train_losses=np.array(train_losses), df_folds=None)
@@ -1109,7 +1182,7 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
 
             _, theta = model.get_dispersion_parameters()
             loss, reconstruction_loss, bce_loss = criterion(
-                (theta, torch.exp(X_out) * torch.tensor(dataset.size_factors, device=device)),
+                (theta, torch.exp(torch.clamp(X_out, -700, 700)) * dataset.size_factors.to(device)),
                 raw_x,
                 detached=True
             )
@@ -1154,7 +1227,8 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
 
 def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pvals_adj, dataset,
                     pseudocount, outlier_threshold, base_fn, pval_dist, delta_psi_cutoff=0.1, min_count=5,
-                    gene_level_info = None, latent_values = None, dispersions=None, mu=None):
+                    gene_level_info = None, latent_values = None, dispersions=None, mu=None,
+                    expected_counts=None):
     # Store as df
     if not isinstance(pvals_adj, pd.DataFrame):
         df_pvals_adj = pd.DataFrame(pvals_adj)
@@ -1186,8 +1260,11 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     else:
         df_pvals_one_sided = pvals_one_sided
 
-    pseudocount = pseudocount  # 0.01
-    if base_fn is not None:
+    if expected_counts is not None:
+        counts = dataset.raw_counts_filtered
+        log2fc = np.log2(counts + 1) - np.log2(expected_counts + 1)
+        fc = (counts + 1) / (expected_counts + 1)
+    elif base_fn is not None:
         log2fc = np.log2(base_fn(dataset.data) + pseudocount) - \
             np.log2(base_fn(df_out) + pseudocount)
         fc = (base_fn(dataset.data) + pseudocount) / \
@@ -1217,4 +1294,5 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     return Result(dataset=dataset, df_out=df_out, df_res=df_res, df_presence=df_presence, df_pvals=df_pvals, df_Z=df_Z,
                   df_pvals_one_sided=df_pvals_one_sided, df_pvals_adj=df_pvals_adj, log2fc=log2fc, fc=fc,
                   pval_dist=pval_dist, outlier_threshold=outlier_threshold, delta_psi_cutoff = delta_psi_cutoff, min_count = min_count,
-                  gene_level_info = gene_level_info, latent_values=df_latent_values, dispersions=dispersions, mu=mu)
+                  gene_level_info = gene_level_info, latent_values=df_latent_values, dispersions=dispersions, mu=mu,
+                  df_expected_counts=expected_counts, df_raw_residuals=df_res if expected_counts is not None else None)

@@ -215,10 +215,13 @@ class OmicAutoencoder(nn.Module):
         Vt_q = torch.from_numpy(Vt_q).to(device) # (q, n_prots)
 
         ## ENCODER weights: (q, n_prots + n_cov), bias: (q)
-        # Covariates are concatenated after omics features.  Preserve their
-        # random initialization without accidentally copying gene weights.
-        cov_enc_init = (self.encoder.model.weight.data[:, -n_cov:]
-                        if n_cov else self.encoder.model.weight.data[:, :0])
+        # OUTRIDER covariates occupy the trailing columns and must remain
+        # separate from the PCA-initialized gene weights. Other model types
+        # retain their established leading-column initialization behavior.
+        if self.model_type == "outrider" and n_cov:
+            cov_enc_init = self.encoder.model.weight.data[:, -n_cov:]
+        else:
+            cov_enc_init = self.encoder.model.weight.data[:, :n_cov]
         self.encoder.model.weight.data.copy_(
             torch.cat([Vt_q.to(device),
                        cov_enc_init.to(device)], axis=1)
@@ -231,8 +234,10 @@ class OmicAutoencoder(nn.Module):
 
         ## DECODER weights: (n_prots, q + n_cov), bias: (n_prot)
         self.decoder.model.bias.data.copy_(torch.from_numpy(omic_means).squeeze(0))
-        cov_dec_init = (self.decoder.model.weight.data[:, -n_cov:]
-                        if n_cov else self.decoder.model.weight.data[:, :0])
+        if self.model_type == "outrider" and n_cov:
+            cov_dec_init = self.decoder.model.weight.data[:, -n_cov:]
+        else:
+            cov_dec_init = self.decoder.model.weight.data[:, :n_cov]
         self.decoder.model.weight.data.copy_(
             torch.cat([Vt_q.T.to(device),
                        cov_dec_init.to(device)], axis=1)
@@ -344,27 +349,67 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
                                               shuffle=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9995)
+    scheduler = (None if model.model_type == "outrider" else
+                 torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9995))
 
     best_model_wts = copy.deepcopy(model.state_dict())  # placeholder
-    best_loss = 10**9
+    best_loss = float("inf")
     train_losses = []
     for epoch in tqdm(range(n_epochs)):
         running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
-        logger.info('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
-                                                                          running_reconstruction_loss, running_bce_loss))
-        scheduler.step()
+
+        if model.model_type == "outrider":
+            running_loss, running_reconstruction_loss, running_bce_loss = _fit_and_evaluate_outrider(
+                dataset, model, criterion
+            )
+            logger.info("[%d] OUTRIDER full-cohort NLL: %.6f", epoch + 1, running_loss)
+        else:
+            logger.info('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
+                                                                              running_reconstruction_loss, running_bce_loss))
+            scheduler.step()
+
         if running_loss < best_loss:
             best_loss = running_loss
             best_model_wts = copy.deepcopy(model.state_dict())  # save weights
         train_losses.append(running_loss)
     
     model.load_state_dict(best_model_wts)
-    
+
+    if model.model_type == "outrider":
+        # Theta must correspond to the restored best autoencoder weights.
+        running_loss, running_reconstruction_loss, running_bce_loss = _fit_and_evaluate_outrider(
+            dataset, model, criterion
+        )
+
     return running_loss, running_reconstruction_loss, running_bce_loss, train_losses
 
 
+def _fit_and_evaluate_outrider(dataset, model, criterion):
+    """Fit theta and evaluate OUTRIDER on the complete cohort."""
+    with torch.no_grad():
+        model.eval()
+        output = model(dataset.X, dataset.torch_mask, cond=dataset.covariates)
+        expected = torch.exp(torch.clamp(output, -700, 700)) * dataset.size_factors
+
+    model.fit_dispersion(dataset.raw_x, expected)
+    model.dispersion.clip_theta()
+    theta = torch.as_tensor(
+        model.get_dispersion_parameters()[1],
+        dtype=expected.dtype,
+        device=expected.device,
+    )
+    loss, reconstruction_loss, bce_loss = criterion(
+        (theta, expected), dataset.raw_x, dataset.torch_mask
+    )
+    return (
+        float(loss.detach().cpu()),
+        float(reconstruction_loss.detach().cpu()),
+        bce_loss,
+    )
+
+
 def _train_iteration(data_loader, model, criterion, optimizer):
+    model.train()
     running_loss = 0.0
     running_reconstruction_loss = 0.0
     running_bce_loss = 0.0
@@ -401,15 +446,9 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         loss.backward()
         optimizer.step()
 
-        # Update dispersions in OUTRIDER model
-        if model.model_type == "outrider":
-            with torch.no_grad():
-                _, theta = model.get_dispersion_parameters()
-                x_pred = torch.exp(x_hat) * size_factors
-                model.fit_dispersion(raw_x.T, x_pred.T)
-                model.dispersion.clip_theta()
-                _, theta = model.get_dispersion_parameters()
-        elif model.model_type == "fraser":
+        # OUTRIDER dispersion is updated once per complete epoch in train(),
+        # never from a mini-batch.
+        if model.model_type == "fraser":
             with torch.no_grad():
                 model.fit_dispersion(K.T, N.T, x_hat)
                 model.dispersion.clip_rho()

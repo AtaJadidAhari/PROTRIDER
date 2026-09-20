@@ -1,11 +1,11 @@
+import logging
+
 import numpy as np
 import pandas as pd
 import scipy
-import tqdm
 import torch
+import tqdm
 from joblib import Parallel, delayed
-import logging
-
 
 __all__ = ["fit_residuals", "get_pvals", "adjust_pvals", "get_pvals_per_gene"]
 
@@ -28,18 +28,16 @@ def fit_residuals(dataset, df_out, model, config):
         
     elif config.analysis == "outrider":
         df_out_clamped = np.clip(df_out, -700, 700)
-        df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
-        df_out = df_res
+        expected = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
         sigma = None
         df0 = None
-
+        model.fit_dispersion(
+            torch.as_tensor(dataset.raw_counts_filtered.to_numpy(dtype=np.float32), dtype=torch.float32, device=dataset.X.device),
+            torch.as_tensor(np.asarray(expected, dtype=np.float32), dtype=torch.float32, device=dataset.X.device),
+        )
         mu, theta = model.get_dispersion_parameters()
-
-        if mu is None:
-            # Fitting NB for outrider if it is not set yet
-            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float32), torch.tensor(df_res.T.values, dtype=torch.float32)) 
-            mu, theta = model.get_dispersion_parameters() #new
         sigma = theta
+        df_res = pd.DataFrame(expected, index=dataset.data.index, columns=dataset.data.columns)
 
     elif config.analysis == "fraser":
         sigma = None
@@ -188,7 +186,9 @@ def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
     if "delta" in effect_type:
         outrider_delta = delta
     if "zscores" in effect_type:
-        zScores = (outrider_l2fc - np.mean(outrider_l2fc, axis=0, keepdims=True)) / np.std(outrider_l2fc, axis=0, ddof=1, keepdims=True)
+        sd = np.std(outrider_l2fc, axis=0, ddof=1, keepdims=True)
+        zScores = np.divide(outrider_l2fc - np.mean(outrider_l2fc, axis=0, keepdims=True), sd,
+                            out=np.zeros_like(outrider_l2fc, dtype=np.float32), where=sd > 0)
 
     return zScores, delta, outrider_fc, outrider_l2fc
 
@@ -200,7 +200,8 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     Parameters:
         counts: observed values (samples, genes)
         res: predicted counts (samples, genes)
-        mu: baseline expression levels (genes,)
+        mu: retained for compatibility and ignored; ``res`` is the complete
+            expected-count matrix.
         theta: dispersion parameters (genes,)
         how: 'two-sided', 'left', or 'right'
     Returns:
@@ -210,7 +211,7 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     if how not in ('two-sided', 'left', 'right'):
         raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
 
-    mean = res * mu[np.newaxis, :]
+    mean = np.asarray(res, dtype=np.float32)
     size = np.broadcast_to(theta[np.newaxis, :], counts.shape)
     p = size / (size + mean)
 
@@ -242,10 +243,12 @@ def get_pv_bb(K, N, mu, rho, how='two-sided'):
         raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
     
     K = np.asarray(K, dtype=int)
-    N = np.asarray(N, dtype=float)
+    # SciPy's beta-binomial CDF is evaluated in float64 so the R-reference
+    # p-value tolerance is preserved for very small probabilities.
+    N = np.asarray(N, dtype=np.float64)
 
-    mu_arr  = np.asarray(mu,  dtype=float)
-    rho_arr = np.asarray(rho, dtype=float)  # (junctions,)
+    mu_arr  = np.asarray(mu, dtype=np.float64)
+    rho_arr = np.asarray(rho, dtype=np.float64)  # (junctions,)
 
     # mu is stored as (junctions, samples) ; transpose to (samples, junctions)
     if mu_arr.ndim == 2:

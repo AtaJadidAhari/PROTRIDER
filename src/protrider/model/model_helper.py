@@ -1,16 +1,20 @@
+import copy
+import logging
 import warnings
+from typing import Optional, Union
+
 import numpy as np
 import pandas as pd
-from sklearn.metrics import precision_recall_curve, auc
 import torch
-import copy
-from typing import Union, Optional
+from sklearn.metrics import auc, precision_recall_curve
 
-from protrider.stats import get_pvals, fit_residuals
-from protrider.config import load_config, ProtriderConfig
-from .model import OmicAutoencoder, train, MSEBCELoss, NegativeBinomialLoss  # masked
-from protrider.datasets import ProtriderSubset, ProtriderDataset, OutriderDataset
-import logging
+from protrider.config import ProtriderConfig, load_config
+from protrider.datasets import (OutriderDataset, ProtriderDataset,
+                                ProtriderSubset)
+from protrider.stats import fit_residuals, get_pvals
+
+from .model import (MSEBCELoss, NegativeBinomialLoss,  # masked
+                    OmicAutoencoder, train)
 
 __all__ = ['init_model', 'find_latent_dim']
 
@@ -55,7 +59,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         elif model.model_type == "outrider":
             _, theta = model.get_dispersion_parameters()
             loss, reconstruction_loss, bce_loss = criterion(
-                (theta, torch.exp(X_out) * torch.tensor(dataset.size_factors)),
+                (theta, torch.exp(X_out) * dataset.size_factors.to(X_out.device)),
                 dataset.raw_x,
                 detached=True)
         logger.info(f'\tInitial loss after model init: %s, {loss_fn}_loss: %s, bce_loss: %s',
@@ -192,7 +196,9 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
                                  presence_absence=presence_absence, model_type=model_type)
 
     if model_type == "outrider":
-        model.dispersion.set_dispersion(model.dispersion.distribution.init_train(dataset.X.T)[1]) 
+        # Estimate theta from non-negative raw counts; centred log inputs are
+        # transformed values and can be negative.
+        model.dispersion.set_dispersion(model.dispersion.distribution.init_train(dataset.raw_x)[1].to(device))
     elif model_type == "fraser":
         K_torch = torch.tensor(dataset.K.values, dtype=torch.float32, device=device)
         N_torch = torch.tensor(dataset.N.values, dtype=torch.float32, device=device)
@@ -289,4 +295,3 @@ def _get_prec_recall(X_pvalue, X_is_outlier):
     pre, rec, _ = precision_recall_curve(label, score)
     curve_auc = auc(rec, pre)
     return curve_auc  # {"auc": curve_auc, "pre": pre, "rec": rec}
-

@@ -36,12 +36,26 @@ protrider --help
 
 - **Protein intensities**: CSV, TSV, or Parquet file
   - **File format**: Columns represent **samples**, rows represent **proteins** (wide format)
-  - Example: `sample_data/protrider_sample_dataset.tsv`
+  - Example: `samples/data/protrider_sample_dataset.tsv`
 - **Sample annotation** (optional): CSV or tab-separated file containing known covariates
   - Format: Each row represents a sample
-  - Example: `sample_data/sample_annotations.tsv`
+  - Example: `samples/data/sample_annotations.tsv`
 
-An example dataset can be found in this repository under `sample_data/`. 
+An example dataset can be found in this repository under `samples/data/`.
+
+### OUTRIDER RNA-count mode
+
+For `analysis: outrider`, supply integer RNA-seq counts and use `genes_as_rows`
+(genes × samples) or `genes_as_columns` (samples × genes). Zeros are valid
+counts. OUTRIDER uses `log((count + 1) / size_factor)` as input and the
+negative-binomial expected count `size_factor * exp(decoder_output)` throughout
+training and scoring. FPKM filtering uses `fpkm_percentile: 0.95` by default,
+which retains genes above the cutoff in the upper 5% of samples.
+
+OUTRIDER outputs `expected_counts.csv` and `residuals.csv`; the latter is
+observed count minus expected count. `df_expected_counts` and
+`df_raw_residuals` expose the same matrices in the Python API. OUTRIDER
+adjusts p-values independently for each sample across its genes.
 
 ### Configuration file
 
@@ -165,5 +179,3 @@ If you use this tool, please cite the original paper:
     eprint = {https://academic.oup.com/bioinformatics/advance-article-pdf/doi/10.1093/bioinformatics/btaf628/65416092/btaf628.pdf},
 }
 ```
-
-

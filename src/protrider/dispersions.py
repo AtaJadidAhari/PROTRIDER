@@ -29,13 +29,13 @@ class OutriderDispersion():
             distribution = NegativeBinomialDistribution()
         #super().__init__(analysis='outrider', distribution=distribution)
         self.distribution = distribution
-        self.mu_scale = None
         self.theta = None
 
     def get_parameters(self):
-        mu_scale = None if self.mu_scale is None else self.mu_scale.detach().cpu().numpy()
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
-        return mu_scale, theta
+        # The decoder bias supplies each gene's baseline expression, so the
+        # compatibility ``mu`` value is fixed to one rather than fitted.
+        return (None if theta is None else torch.ones_like(self.theta).detach().cpu().numpy(), theta)
     
     def set_dispersion(self, theta):
         self.theta = theta
@@ -43,28 +43,22 @@ class OutriderDispersion():
     def clip_theta(self, lower=0.01, upper=1000):
         self.theta = torch.clip(self.theta, lower, upper)
 
-    def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01, device=None):
+    def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01, upper_bound=1000.0, device=None):
         """
-        x_true, x_pred: torch.Tensor, shape (genes, samples)
+        x_true, x_pred: torch.Tensor, shape (samples, genes). ``x_pred`` is
+        the full expected-count matrix, not a normalized mean.
         """
 
+        if x_true.shape != x_pred.shape:
+            raise ValueError("OUTRIDER theta fitting requires matching samples x genes matrices.")
+        device = device or x_true.device
         x_true = x_true.to(dtype=torch.float32, device=device)
         x_pred = x_pred.to(dtype=torch.float32, device=device)
-        
-        mu_scale_init, theta_init = self.distribution.init_fit(x_true, x_pred)
-        
-        # Reparameterization using exp, since LBFGS does not consider bounds:
-        # where theta = exp(p_theta) + lower_bound
-        # This ensures parameters >= lower_bound
-        # Use min=1e-8 to avoid log(0)
-        p_theta_init = torch.log(torch.clamp(theta_init - lower_bound, min=1e-8))
-        p_mu_scale_init = torch.log(torch.clamp(mu_scale_init - lower_bound, min=1e-8))
-
-        p_theta = nn.Parameter(p_theta_init.to(device))
-        p_mu_scale = nn.Parameter(p_mu_scale_init.to(device))
+        theta_init = estimate_theta_robust_moments(x_true, lower_bound, upper_bound)
+        p_theta = nn.Parameter(torch.log(torch.clamp(theta_init - lower_bound, min=1e-8)))
 
         optimizer = optim.LBFGS(
-            [p_theta, p_mu_scale],
+            [p_theta],
             max_iter=max_iter,
             history_size=5,
             tolerance_change=2.2e-9,
@@ -74,24 +68,14 @@ class OutriderDispersion():
         def closure():
             optimizer.zero_grad()
             
-            # Transform parameters (shape [genes])
-            theta = torch.exp(p_theta) + lower_bound
-            mu_scale = torch.exp(p_mu_scale) + lower_bound
-            
-            # Unsqueeze to [genes, 1] for broadcasting against data [genes, samples]
-            theta = theta.unsqueeze(1)
-            mu_scale = mu_scale.unsqueeze(1)
-
-            # Calculate loss and backpropagate
-            mu = x_pred * mu_scale
-            loss = self.distribution.loss(x_true, theta, mu)
+            theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).unsqueeze(0)
+            loss = self.distribution.loss(x_true, theta, x_pred)
             loss.backward()
             return loss
 
         optimizer.step(closure)
 
-        self.theta = (torch.exp(p_theta) + lower_bound).detach().cpu()
-        self.mu_scale = (torch.exp(p_mu_scale) + lower_bound).detach().cpu()
+        self.theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).detach()
 
 class FraserDispersion(): 
     def __init__(self, distribution: Optional[str] = None):
@@ -181,7 +165,7 @@ class Distribution(): # Do we need this base class?
 class NegativeBinomialDistribution(Distribution):
     def init_train(self, x_true, theta_min=0.01, theta_max=1000.0):
         """Initialize theta and mu for training: theta robust moments"""
-        theta = estimate_theta_robust_moments(x_true=x_true.T, theta_min=theta_min, theta_max=theta_max)
+        theta = estimate_theta_robust_moments(x_true=x_true, theta_min=theta_min, theta_max=theta_max)
         mu_scale = None
         return mu_scale, theta
 
