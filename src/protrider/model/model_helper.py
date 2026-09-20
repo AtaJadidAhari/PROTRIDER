@@ -33,7 +33,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
 
     dataset.perform_svd()
     q = dataset.find_enc_dim_optht()
-    enc_search_results =  pd.DataFrame(columns=["encod_dim", "aucpr"])
+    enc_search_results = pd.DataFrame(columns=["encod_dim", "aucpr"])
 
     
     def train_and_eval_q(latent_dim):
@@ -199,7 +199,7 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
         model.dispersion.set_dispersion(model.dispersion.distribution.init_train(K_torch, N_torch)[1])
     
 
-    if model_type != "fraser":
+    if model_type == "protrider":
         model.double()
     model.to(device)
     if init_wPCA:
@@ -244,7 +244,10 @@ def _inject_outliers(dataset, inj_freq=1e-3, inj_mean=3, inj_sd=1.6, device=torc
     # sd = torch.nanstd(X_trans, dim=0, unbiased=True)
 
     # reverse transform to original space
-    X_injected = torch.tensor(outlier_mask * inj_zscores * sd).to(device) + dataset.X
+    injected_values = torch.tensor(outlier_mask * inj_zscores * sd).to(device)
+    if isinstance(dataset, OutriderDataset):
+        injected_values = injected_values.to(dtype=dataset.X.dtype)
+    X_injected = injected_values + dataset.X
 
     # avoid inj outlier to be too strong
     cond = X_injected > max_outlier_value

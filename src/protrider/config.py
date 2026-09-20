@@ -22,10 +22,10 @@ class ProtriderConfig:
     
     # I/O paths
     input_intensities: Union[str, List[str]]  # File path only or a list of paths
-    input_format: Literal["proteins_as_rows", "proteins_as_columns"] = "proteins_as_rows"
+    input_format: Literal["proteins_as_rows", "proteins_as_columns", "genes_as_rows", "genes_as_columns"] = "proteins_as_rows"
     index_col: str = "protein_ID"
     # Analysis type
-    analysis: str = "protrider"
+    analysis: Literal["protrider", "outrider", "fraser"] = "protrider"
     out_dir: Optional[str] = None  # File path or None
     sample_annotation: Optional[str] = None  # File path or None
 
@@ -41,8 +41,9 @@ class ProtriderConfig:
 
 
     # OUTRIDER params
-    fpkmCutoff: Optional[int] =  1
-    gtf: Optional[str] = "sample_data/gencode_annotation_trunc.gtf"
+    fpkmCutoff: Optional[float] = 1
+    fpkm_percentile: float = 0.95
+    gtf: Optional[str] = "samples/data/gencode_annotation_trunc.gtf"
     
     # Preprocessing params
     max_allowed_NAs_per_protein: float = 0.3
@@ -133,6 +134,8 @@ class ProtriderConfig:
                 raise ValueError(f"{field_name} supports at most 2 files, got {len(value)}")
 
         # Validation
+        if self.analysis not in {"protrider", "outrider", "fraser"}:
+            raise ValueError("analysis must be 'protrider', 'outrider', or 'fraser'")
         if self.max_allowed_NAs_per_protein < 0 or self.max_allowed_NAs_per_protein > 1:
             raise ValueError("max_allowed_NAs_per_protein must be between 0 and 1")
         
@@ -154,6 +157,22 @@ class ProtriderConfig:
         if self.presence_absence and self.n_layers != 1:
             import warnings
             warnings.warn("Presence absence modeling is only validated with n_layers=1")
+
+        if self.analysis == "outrider":
+            if self.autoencoder_loss != "NLL":
+                raise ValueError("OUTRIDER requires autoencoder_loss='NLL' (negative-binomial likelihood).")
+            if self.pval_dist != "nb":
+                raise ValueError("OUTRIDER requires pval_dist='nb'.")
+            if self.cross_val:
+                raise NotImplementedError("OUTRIDER cross-validation is not implemented.")
+            if self.presence_absence:
+                raise NotImplementedError("OUTRIDER presence/absence modelling is not implemented.")
+            if self.fpkmCutoff is not None and self.fpkmCutoff < 0:
+                raise ValueError("fpkmCutoff must be non-negative.")
+            if not 0 < self.fpkm_percentile <= 1:
+                raise ValueError("fpkm_percentile must be in (0, 1].")
+            if self.fpkmCutoff is not None and not self.gtf:
+                raise ValueError("A GTF is required when OUTRIDER FPKM filtering is enabled.")
         
         # Set log_func and base_fn based on log_func_name
         if self.log_func_name == "log2":

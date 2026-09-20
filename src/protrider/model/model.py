@@ -215,10 +215,10 @@ class OmicAutoencoder(nn.Module):
         Vt_q = torch.from_numpy(Vt_q).to(device) # (q, n_prots)
 
         ## ENCODER weights: (q, n_prots + n_cov), bias: (q)
-        if self.model_type == "outrider" and n_cov:
-            cov_enc_init = self.encoder.model.weight.data[:, -n_cov:]
-        else:
-            cov_enc_init = self.encoder.model.weight.data[:, :n_cov]
+        # Covariates are concatenated after omics features.  Preserve their
+        # random initialization without accidentally copying gene weights.
+        cov_enc_init = (self.encoder.model.weight.data[:, -n_cov:]
+                        if n_cov else self.encoder.model.weight.data[:, :0])
         self.encoder.model.weight.data.copy_(
             torch.cat([Vt_q.to(device),
                        cov_enc_init.to(device)], axis=1)
@@ -231,10 +231,8 @@ class OmicAutoencoder(nn.Module):
 
         ## DECODER weights: (n_prots, q + n_cov), bias: (n_prot)
         self.decoder.model.bias.data.copy_(torch.from_numpy(omic_means).squeeze(0))
-        if self.model_type == "outrider" and n_cov:
-            cov_dec_init = self.decoder.model.weight.data[:, -n_cov:]
-        else:
-            cov_dec_init = self.decoder.model.weight.data[:, :n_cov]
+        cov_dec_init = (self.decoder.model.weight.data[:, -n_cov:]
+                        if n_cov else self.decoder.model.weight.data[:, :0])
         self.decoder.model.weight.data.copy_(
             torch.cat([Vt_q.T.to(device),
                        cov_dec_init.to(device)], axis=1)

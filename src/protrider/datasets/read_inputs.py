@@ -32,6 +32,8 @@ def read(input_intensities: str, index_col: str = None, input_format: str = "pro
         input_format: Format of the input files:
                      - "proteins_as_rows": features are rows, samples are columns (default)
                      - "proteins_as_columns": samples are rows, features are columns
+                     - "genes_as_rows": genes are rows, samples are columns
+                     - "genes_as_columns": samples are rows, genes are columns
 
     Returns:
         pd.DataFrame: Data with samples as rows and features as columns
@@ -66,20 +68,25 @@ def read(input_intensities: str, index_col: str = None, input_format: str = "pro
         intensities.append(temp_data)
     data = pd.concat(intensities, axis=1)
 
-    omics = '(samples , proteins)' if input_format in ['proteins_as_rows', 'proteins_as_columns'] else ''
-    # Transpose if needed to get samples as rows, proteins as columns
-    if input_format == "proteins_as_rows":
+    feature_kind = "genes" if input_format.startswith("genes_") else "proteins"
+    omics = f'(samples , {feature_kind})' if input_format in {
+        'proteins_as_rows', 'proteins_as_columns', 'genes_as_rows', 'genes_as_columns'
+    } else ''
+    # Normalize tabular input to samples as rows and features as columns.
+    if input_format in {"proteins_as_rows", "genes_as_rows"}:
         data = data.T
         data.index.names = ['sampleID']
-        data.columns.name = 'proteinID'
-    elif input_format == "proteins_as_columns":
+        data.columns.name = 'geneID' if feature_kind == "genes" else 'proteinID'
+    elif input_format in {"proteins_as_columns", "genes_as_columns"}:
         # Already in the correct format, just set names
         data.index.name = 'sampleID'
-        data.columns.name = 'proteinID'
+        data.columns.name = 'geneID' if feature_kind == "genes" else 'proteinID'
     elif input_format == 'introns_as_rows': # TODO 
         pass
     else:
-        raise ValueError(f"Invalid input_format: {input_format}. Must be 'proteins_as_rows' or 'proteins_as_columns'")
+        raise ValueError(
+            f"Invalid input_format: {input_format}. Expected proteins or genes as rows or columns."
+        )
     
     logger.info(f'Finished reading raw data with shape: {data.shape} {omics}')
 
