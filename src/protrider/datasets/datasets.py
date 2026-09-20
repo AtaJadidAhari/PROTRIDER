@@ -258,22 +258,28 @@ class OutriderDataset(Dataset, PCADataset):
         # Read and preprocess covariates
         if sa_file is not None and cov_used is not None:
             try:
-                self.covariates, self.centered_covariates_noNA = parse_covariates(sa_file, cov_used, self.data.index)
-                self.covariates = torch.from_numpy(self.covariates)
-                self.centered_covariates_noNA = torch.from_numpy(self.centered_covariates_noNA)
+                raw_covariates, centered_covariates = parse_covariates(sa_file, cov_used, self.data.index)
+                self.raw_covariates = torch.from_numpy(raw_covariates)
+                self.centered_covariates_noNA = torch.from_numpy(centered_covariates)
+                # Conditional model inputs use centered numerical covariates.
+                self.covariates = self.centered_covariates_noNA
             except ValueError as e:
                 print(e)
                 logger.warning("No valid covariates found after parsing.")
                 self.covariates = torch.empty(self.data.shape[0], 0)
                 self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
+                self.raw_covariates = self.covariates
         else:
             self.covariates = torch.empty(self.data.shape[0], 0)
             self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
+            self.raw_covariates = self.covariates
 
         ### Send data to cpu/gpu device
         self.X = self.X.to(device)
         self.torch_mask = self.torch_mask.to(device)
         self.covariates = self.covariates.to(device)
+        self.centered_covariates_noNA = self.covariates
+        self.raw_covariates = self.raw_covariates.to(device)
         self.omic_means_torch = self.omic_means_torch.to(device)
         self.raw_x = self.raw_x.to(device)
         self.size_factors = torch.tensor(self.size_factors).to(device)
@@ -744,5 +750,3 @@ class FraserDataset(Dataset, PCADataset):
                           index=self.N.index)
             ).T,
         }
-
-

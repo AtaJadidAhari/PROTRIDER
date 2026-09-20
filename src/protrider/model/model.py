@@ -215,7 +215,10 @@ class OmicAutoencoder(nn.Module):
         Vt_q = torch.from_numpy(Vt_q).to(device) # (q, n_prots)
 
         ## ENCODER weights: (q, n_prots + n_cov), bias: (q)
-        cov_enc_init = self.encoder.model.weight.data[:, 0:n_cov] # TODO [:, -n_cov:]????
+        if self.model_type == "outrider" and n_cov:
+            cov_enc_init = self.encoder.model.weight.data[:, -n_cov:]
+        else:
+            cov_enc_init = self.encoder.model.weight.data[:, :n_cov]
         self.encoder.model.weight.data.copy_(
             torch.cat([Vt_q.to(device),
                        cov_enc_init.to(device)], axis=1)
@@ -228,7 +231,10 @@ class OmicAutoencoder(nn.Module):
 
         ## DECODER weights: (n_prots, q + n_cov), bias: (n_prot)
         self.decoder.model.bias.data.copy_(torch.from_numpy(omic_means).squeeze(0))
-        cov_dec_init = self.decoder.model.weight.data[:, 0:n_cov]
+        if self.model_type == "outrider" and n_cov:
+            cov_dec_init = self.decoder.model.weight.data[:, -n_cov:]
+        else:
+            cov_dec_init = self.decoder.model.weight.data[:, :n_cov]
         self.decoder.model.weight.data.copy_(
             torch.cat([Vt_q.T.to(device),
                        cov_dec_init.to(device)], axis=1)
@@ -553,5 +559,3 @@ class BetaBinomialLoss(nn.Module):
                     bce_loss.detach().cpu().numpy() if bce_loss is not None else None)
 
         return loss, nll, bce_loss
-
-
