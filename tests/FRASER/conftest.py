@@ -5,8 +5,8 @@ from pathlib import Path
 from protrider.datasets.datasets import FraserDataset
 
 ROOT = Path(__file__).parent.parent.parent  # PROTRIDER/
-DATA_DIR = ROOT / "sample_data/fraser"
-GTF_PATH = ROOT / "sample_data/gencode_annotation_trunc.gtf"
+DATA_DIR = ROOT / "samples/data/fraser"
+GTF_PATH = ROOT / "samples/data/gencode_annotation_trunc.gtf"
 
 # Fixed filter params used consistently across dataset construction and reference comparisons.
 MIN_EXPRESSION_IN_ONE_SAMPLE = 20
@@ -28,7 +28,7 @@ def unsplit_reads_path():
 
 @pytest.fixture(scope="session")
 def fraser_dataset(split_reads_path, unsplit_reads_path):
-    """FraserDataset built from the real sample_data/fraser sample, without gene annotation."""
+    """FraserDataset built from the bundled splice-count sample, without gene annotation."""
     return FraserDataset(
         split_reads=[split_reads_path],
         unsplit_reads=[unsplit_reads_path],

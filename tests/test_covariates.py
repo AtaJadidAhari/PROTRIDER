@@ -251,7 +251,7 @@ class TestErrorHandling:
         
         # Test with None cov_used
         with pytest.raises(ValueError, match="Covariates to use must be specified"):
-            parse_covariates('sample_data/sample_annotations.tsv', None)
+            parse_covariates('samples/data/sample_annotations.tsv', None)
         
         # Test with unsupported file type
         with tempfile.NamedTemporaryFile(mode='w', suffix='.xlsx', delete=False) as f:

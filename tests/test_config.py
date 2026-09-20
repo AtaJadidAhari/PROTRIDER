@@ -290,7 +290,7 @@ class TestLoadConfig:
         if config_path.exists():
             config = load_config(config_path)
             assert config.out_dir == 'output'
-            assert config.input_intensities == ['sample_data/protrider_sample_dataset.tsv']
+            assert config.input_intensities == ['samples/data/protrider_sample_dataset.tsv']
             assert config.index_col == 'protein_ID'
             assert config.n_epochs == 100
             assert config.find_q_method == 'OHT'

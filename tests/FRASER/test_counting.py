@@ -2,7 +2,7 @@
 Placeholder tests for BAM-level read counting.
 
 FraserDataset does not implement BAM-level read counting: it starts from
-already-counted split_reads/unsplit_reads TSVs (see sample_data/fraser/split_reads.tsv,
+already-counted split_reads/unsplit_reads TSVs (see samples/data/fraser/split_reads.tsv,
 unsplit_reads.tsv), which is the K/N-computation stage tested in test_data.py.
 
 These are kept as explicit skips - rather than simply omitting the file - so
