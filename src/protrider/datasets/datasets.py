@@ -195,14 +195,17 @@ class OutriderDataset(Dataset, PCADataset):
                  device: torch.device = torch.device('cpu'),
                  input_format: str = "genes_as_rows",
                  fpkm_percentile: float = 0.95,
+                 dtype: torch.dtype = torch.float32,
                  **kwargs):
         super().__init__()
         self.device = device
         self.gtf = gtf
+        self.dtype = dtype
+        self.numpy_dtype = np.float32 if dtype == torch.float32 else np.float64
         # Unlike proteomics, zero is an observed RNA-seq count, not missing.
         raw = read(input_intensities, index_col, input_format)
         raw.index.name, raw.columns.name = "sampleID", "geneID"
-        values = raw.to_numpy(dtype=np.float32)
+        values = raw.to_numpy(dtype=np.float64)
         if not np.isfinite(values).all():
             raise ValueError("OUTRIDER counts must be finite; missing counts are not supported.")
         if (values < 0).any() or not np.equal(values, np.floor(values)).all():
@@ -210,7 +213,7 @@ class OutriderDataset(Dataset, PCADataset):
         self.raw_counts_unfiltered = raw.astype(np.int64)
         self.raw_data = self.raw_counts_unfiltered  # Alias retained for existing callers.
         _, size_factors = deseq2_norm(self.raw_counts_unfiltered)
-        self.size_factors_array = np.asarray(size_factors, dtype=np.float32).reshape(-1, 1)
+        self.size_factors_array = np.asarray(size_factors, dtype=self.numpy_dtype).reshape(-1, 1)
         if not np.isfinite(self.size_factors_array).all() or (self.size_factors_array <= 0).any():
             raise ValueError("OUTRIDER size factors must be finite and positive.")
 
@@ -230,39 +233,54 @@ class OutriderDataset(Dataset, PCADataset):
             raise ValueError("OUTRIDER FPKM filtering removed every gene.")
         self.raw_filtered = self.raw_counts_filtered
 
+        # Match the fitted model to the retained gene set. The provisional
+        # factors above are used only to calculate the expression filter.
+        _, size_factors = deseq2_norm(self.raw_counts_filtered)
+        self.size_factors_array = np.asarray(size_factors, dtype=self.numpy_dtype).reshape(-1, 1)
+        if not np.isfinite(self.size_factors_array).all() or (self.size_factors_array <= 0).any():
+            raise ValueError("OUTRIDER size factors must be finite and positive after gene filtering.")
+
         # Transform raw counts to log-normalized values, then centre each gene.
         self.normalized_log_counts = pd.DataFrame(
-            np.asarray(np.log((self.raw_counts_filtered.to_numpy(dtype=np.float32) + 1.0) / self.size_factors_array), dtype=np.float32),
+            np.asarray(
+                np.log(
+                    (self.raw_counts_filtered.to_numpy(dtype=self.numpy_dtype) + 1.0)
+                    / self.size_factors_array
+                ),
+                dtype=self.numpy_dtype,
+            ),
             index=raw.index, columns=self.raw_counts_filtered.columns,
         )
-        self.gene_means = self.normalized_log_counts.mean(axis=0).astype(np.float32)
+        self.gene_means = self.normalized_log_counts.mean(axis=0).astype(self.numpy_dtype)
         self.data = self.normalized_log_counts
         self.omic_means = self.gene_means.to_numpy()[None, :]
         self.centered_input = self.normalized_log_counts.subtract(self.gene_means, axis=1)
-        self.centered_log_data_noNA = self.centered_input.to_numpy(dtype=np.float32)
+        self.centered_log_data_noNA = self.centered_input.to_numpy(dtype=self.numpy_dtype)
         self.mask = np.zeros_like(self.centered_log_data_noNA, dtype=bool)
-        self.X = torch.as_tensor(self.centered_log_data_noNA, dtype=torch.float32)
-        self.raw_x = torch.as_tensor(self.raw_counts_filtered.to_numpy(dtype=np.float32), dtype=torch.float32)
+        self.X = torch.as_tensor(self.centered_log_data_noNA, dtype=dtype)
+        self.raw_x = torch.as_tensor(
+            self.raw_counts_filtered.to_numpy(dtype=self.numpy_dtype), dtype=dtype
+        )
         self.torch_mask = torch.tensor(self.mask)
-        self.omic_means_torch = torch.as_tensor(self.omic_means.squeeze(0), dtype=torch.float32)
+        self.omic_means_torch = torch.as_tensor(self.omic_means.squeeze(0), dtype=dtype)
 
         # Read and preprocess covariates
         if sa_file is not None and cov_used is not None:
             try:
                 raw_covariates, centered_covariates = parse_covariates(sa_file, cov_used, self.data.index)
-                self.raw_covariates = torch.from_numpy(raw_covariates)
-                self.centered_covariates_noNA = torch.from_numpy(centered_covariates)
+                self.raw_covariates = torch.from_numpy(raw_covariates).to(dtype=dtype)
+                self.centered_covariates_noNA = torch.from_numpy(centered_covariates).to(dtype=dtype)
                 # Conditional model inputs use centered numerical covariates.
                 self.covariates = self.centered_covariates_noNA
             except ValueError as e:
                 print(e)
                 logger.warning("No valid covariates found after parsing.")
-                self.covariates = torch.empty(self.data.shape[0], 0)
-                self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
+                self.covariates = torch.empty(self.data.shape[0], 0, dtype=dtype)
+                self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0, dtype=dtype)
                 self.raw_covariates = self.covariates
         else:
-            self.covariates = torch.empty(self.data.shape[0], 0)
-            self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0)
+            self.covariates = torch.empty(self.data.shape[0], 0, dtype=dtype)
+            self.centered_covariates_noNA = torch.empty(self.data.shape[0], 0, dtype=dtype)
             self.raw_covariates = self.covariates
 
         ### Send data to cpu/gpu device
@@ -273,7 +291,7 @@ class OutriderDataset(Dataset, PCADataset):
         self.raw_covariates = self.raw_covariates.to(device)
         self.omic_means_torch = self.omic_means_torch.to(device)
         self.raw_x = self.raw_x.to(device)
-        self.size_factors = torch.as_tensor(self.size_factors_array, dtype=torch.float32, device=device)
+        self.size_factors = torch.as_tensor(self.size_factors_array, dtype=dtype, device=device)
         # self.presence = (~self.torch_mask).long()
 
     def __len__(self):
@@ -373,16 +391,18 @@ class OutriderDataset(Dataset, PCADataset):
         if bad.any():
             exons.loc[bad, ["start","end"]] = exons.loc[bad, ["end","start"]].values
 
-        # group by gene and merge intervals
-        def _sum_for_gene(g):
+        # Merge only within one genomic coordinate system, then sum loci for
+        # genes represented on multiple contigs or strands.
+        def _sum_for_locus(g):
             ivals = g[["start","end"]].to_numpy(dtype=np.int64)
             return merge_and_sum(ivals)
 
-        lengths = (
-            exons.groupby("gene_id", sort=False, observed=True)
-                 .apply(_sum_for_gene)
+        locus_lengths = (
+            exons.groupby(["gene_id", "seqname", "strand"], sort=False, observed=True)
+                 .apply(_sum_for_locus, include_groups=False)
                  .reset_index(name="exonic_length")
         )
+        lengths = locus_lengths.groupby("gene_id", sort=False, observed=True)["exonic_length"].sum().reset_index()
         return lengths
 
     def calculate_fpkm(self, expr_df, lengths_df, robust=True):
@@ -415,7 +435,7 @@ class OutriderDataset(Dataset, PCADataset):
 
         fpkm = expr_df.div(lengths.replace(0, np.nan), axis=0) * 1e9
         fpkm = fpkm.div(library_size, axis=1)
-        return fpkm.fillna(0.0).astype(np.float32)
+        return fpkm.fillna(0.0).astype(self.numpy_dtype)
 
     def find_enc_dim_optht(self):
         """Estimate the latent dimension with optimal hard thresholding."""

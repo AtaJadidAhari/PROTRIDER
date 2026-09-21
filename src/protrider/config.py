@@ -44,6 +44,7 @@ class ProtriderConfig:
     fpkmCutoff: Optional[float] = 1
     fpkm_percentile: float = 0.95
     gtf: Optional[str] = "samples/data/gencode_annotation_trunc.gtf"
+    outrider_precision: Literal["float32", "float64"] = "float32"
     
     # Preprocessing params
     max_allowed_NAs_per_protein: float = 0.3
@@ -53,6 +54,8 @@ class ProtriderConfig:
     log_func: Optional[Callable] = field(init=False, repr=False, default=None)
     base_fn: Callable = field(init=False, repr=False, default=None)
     device_torch: torch.device = field(init=False, repr=False, default=None)
+    outrider_torch_dtype: torch.dtype = field(init=False, repr=False, default=torch.float32)
+    outrider_numpy_dtype: type = field(init=False, repr=False, default=np.float32)
     
     # Covariates
     cov_used: Optional[List[str]] = None
@@ -167,6 +170,10 @@ class ProtriderConfig:
                 raise NotImplementedError("OUTRIDER cross-validation is not implemented.")
             if self.presence_absence:
                 raise NotImplementedError("OUTRIDER presence/absence modelling is not implemented.")
+            if self.log_func_name != "log":
+                raise ValueError("OUTRIDER uses the natural-log count transformation; set log_func_name='log'.")
+            if self.outrider_precision not in {"float32", "float64"}:
+                raise ValueError("outrider_precision must be 'float32' or 'float64'.")
             if self.fpkmCutoff is not None and self.fpkmCutoff < 0:
                 raise ValueError("fpkmCutoff must be non-negative.")
             if not 0 < self.fpkm_percentile <= 1:
@@ -192,6 +199,12 @@ class ProtriderConfig:
         
         # Set PyTorch device
         self.device_torch = torch.device("cuda" if (torch.cuda.is_available() and self.device == 'gpu') else "cpu")
+        self.outrider_torch_dtype = (
+            torch.float32 if self.outrider_precision == "float32" else torch.float64
+        )
+        self.outrider_numpy_dtype = (
+            np.float32 if self.outrider_precision == "float32" else np.float64
+        )
     
     def save(self, out_dir: Union[str, Path]) -> None:
         """

@@ -205,7 +205,9 @@ def init_model(dataset, latent_dim, init_wPCA=True, n_layer=1, h_dim=None, devic
         model.dispersion.set_dispersion(model.dispersion.distribution.init_train(K_torch, N_torch)[1])
     
 
-    if model_type == "protrider":
+    if model_type == "outrider":
+        model.to(dtype=dataset.X.dtype)
+    elif model_type == "protrider":
         model.double()
     model.to(device)
     if init_wPCA:
