@@ -35,6 +35,11 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
     if isinstance(config, str):
         config = load_config(config)
 
+    if model_type == "outrider" and method in {"gs", "bs"}:
+        raise NotImplementedError(
+            "OUTRIDER latent-dimension injection search requires count-scale targets and is not implemented."
+        )
+
     dataset.perform_svd()
     q = dataset.find_enc_dim_optht()
     enc_search_results = pd.DataFrame(columns=["encod_dim", "aucpr"])

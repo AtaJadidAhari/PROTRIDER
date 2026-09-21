@@ -448,8 +448,11 @@ class OutriderDataset(Dataset, PCADataset):
         self.oht_threshold = float(omega * np.median(self.s))
         q = int(np.sum(self.s > self.oht_threshold))
         self.oht_diagnostics = {"singular_values": self.s.copy(), "threshold": self.oht_threshold, "q": q}
-        if q == 0:
-            logger.warning("No singular value passed OUTRIDER OHT; falling back to q=2.")
+        if q < 2:
+            logger.warning(
+                "OUTRIDER OHT selected q=%s, below the supported minimum; falling back to q=2.",
+                q,
+            )
             q = 2
             self.oht_diagnostics["q"] = q
         return q

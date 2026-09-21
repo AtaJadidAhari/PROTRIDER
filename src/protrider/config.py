@@ -75,7 +75,7 @@ class ProtriderConfig:
     n_epochs: int = 100
     lr: float = 1e-4
     batch_size: Optional[int] = None
-    find_q_method: str = "OHT"  # "OHT", "gs", or an integer
+    find_q_method: Union[str, int] = "OHT"  # "OHT", "gs", or an integer
     init_pca: bool = True
     h_dim: Optional[int] = None
     autoencoder_loss: str = "MSE" # MSE or NLL
@@ -154,8 +154,15 @@ class ProtriderConfig:
         if self.outlier_threshold < 0 or self.outlier_threshold > 1:
             raise ValueError("outlier_threshold must be between 0 and 1")
         
+        if isinstance(self.find_q_method, int):
+            self.find_q_method = str(self.find_q_method)
+        if not isinstance(self.find_q_method, str):
+            raise ValueError("find_q_method must be 'OHT', 'gs', or an integer")
         if self.find_q_method not in ["OHT", "gs"] and not self.find_q_method.isdigit():
             raise ValueError("find_q_method must be 'OHT', 'gs', or an integer string")
+
+        if self.autoencoder_loss not in {"MSE", "NLL", "BBL"}:
+            raise ValueError("autoencoder_loss must be 'MSE', 'NLL', or 'BBL'.")
         
         if self.presence_absence and self.n_layers != 1:
             import warnings
@@ -168,6 +175,10 @@ class ProtriderConfig:
                 raise ValueError("OUTRIDER requires pval_dist='nb'.")
             if self.cross_val:
                 raise NotImplementedError("OUTRIDER cross-validation is not implemented.")
+            if self.find_q_method == "gs":
+                raise NotImplementedError(
+                    "OUTRIDER grid-search injection is not implemented for count-scale targets; use OHT or a fixed q."
+                )
             if self.presence_absence:
                 raise NotImplementedError("OUTRIDER presence/absence modelling is not implemented.")
             if self.log_func_name != "log":
