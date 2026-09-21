@@ -114,6 +114,21 @@ class TestConfigValidation:
                 input_intensities="data.csv",
                 lr=0
             )
+
+    def test_outrider_rejects_inconsistent_execution_paths(self):
+        base = {
+            "out_dir": "output",
+            "input_intensities": "counts.tsv",
+            "analysis": "outrider",
+            "autoencoder_loss": "NLL",
+            "pval_dist": "nb",
+        }
+        with pytest.raises(NotImplementedError, match="grid-search injection"):
+            ProtriderConfig(**base, find_q_method="gs")
+        with pytest.raises(ValueError, match="natural-log"):
+            ProtriderConfig(**base, log_func_name="log2")
+        with pytest.raises(ValueError, match="outrider_precision"):
+            ProtriderConfig(**base, outrider_precision="float16")
     
     def test_invalid_max_na_too_high(self):
         """Test that max_allowed_NAs_per_protein > 1 raises error."""
