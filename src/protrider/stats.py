@@ -11,6 +11,17 @@ __all__ = ["fit_residuals", "get_pvals", "adjust_pvals", "get_pvals_per_gene"]
 
 logger = logging.getLogger(__name__)
 
+
+def _outrider_expected_counts(df_out, size_factors, dtype):
+    """Construct finite OUTRIDER expected counts with the configured precision."""
+    logits = np.asarray(df_out, dtype=dtype)
+    factors = np.asarray(size_factors, dtype=dtype)
+    finfo = np.finfo(dtype)
+    max_factor = max(float(np.max(factors)), 1.0)
+    max_log = np.log(finfo.max) - np.log(max_factor) - 2.0
+    min_log = np.log(finfo.tiny)
+    return np.exp(np.clip(logits, min_log, max_log)).astype(dtype, copy=False) * factors
+
 def fit_residuals(dataset, df_out, model, config):
     if config.analysis == 'protrider':
         df_res = dataset.data - df_out  # log data - pred data
@@ -27,17 +38,25 @@ def fit_residuals(dataset, df_out, model, config):
             raise ValueError(f"Unknown distribution: {dis}")
         
     elif config.analysis == "outrider":
-        df_out_clamped = np.clip(df_out, -700, 700)
-        expected = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
+        dtype = config.outrider_numpy_dtype
+        expected = _outrider_expected_counts(
+            df_out, dataset.size_factors.detach().cpu().numpy(), dtype
+        )
         sigma = None
         df0 = None
         model.fit_dispersion(
-            torch.as_tensor(dataset.raw_counts_filtered.to_numpy(dtype=np.float32), dtype=torch.float32, device=dataset.X.device),
-            torch.as_tensor(np.asarray(expected, dtype=np.float32), dtype=torch.float32, device=dataset.X.device),
+            dataset.raw_x,
+            torch.as_tensor(expected, dtype=config.outrider_torch_dtype, device=dataset.X.device),
+            fit_mean_scale=not config.autoencoder_training,
         )
         mu, theta = model.get_dispersion_parameters()
+        expected = expected * np.asarray(mu, dtype=dtype)[None, :]
         sigma = theta
-        df_res = pd.DataFrame(expected, index=dataset.data.index, columns=dataset.data.columns)
+        df_res = pd.DataFrame(
+            np.asarray(expected, dtype=dtype),
+            index=dataset.data.index,
+            columns=dataset.data.columns,
+        )
 
     elif config.analysis == "fraser":
         sigma = None
@@ -167,6 +186,8 @@ def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
     Returns:
         zscore, delta, outrider_fc, outrider_l2fc.
     """
+    res = np.asarray(res)
+    counts = np.asarray(counts, dtype=res.dtype)
     outrider_fc = None
     outrider_l2fc = None
     delta = None
@@ -187,8 +208,12 @@ def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
         outrider_delta = delta
     if "zscores" in effect_type:
         sd = np.std(outrider_l2fc, axis=0, ddof=1, keepdims=True)
-        zScores = np.divide(outrider_l2fc - np.mean(outrider_l2fc, axis=0, keepdims=True), sd,
-                            out=np.zeros_like(outrider_l2fc, dtype=np.float32), where=sd > 0)
+        zScores = np.divide(
+            outrider_l2fc - np.mean(outrider_l2fc, axis=0, keepdims=True),
+            sd,
+            out=np.zeros_like(outrider_l2fc),
+            where=sd > 0,
+        )
 
     return zScores, delta, outrider_fc, outrider_l2fc
 
@@ -211,7 +236,10 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     if how not in ('two-sided', 'left', 'right'):
         raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
 
-    mean = np.asarray(res, dtype=np.float32)
+    mean = np.asarray(res)
+    dtype = mean.dtype
+    counts = np.asarray(counts)
+    theta = np.asarray(theta, dtype=dtype)
     size = np.broadcast_to(theta[np.newaxis, :], counts.shape)
     p = size / (size + mean)
 
@@ -220,11 +248,14 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     dval = scipy.stats.nbinom.pmf(counts, n=size, p=p)
 
     if how == 'left':
-        return pless
+        return np.asarray(pless, dtype=dtype)
     elif how == 'right':
-        return 1 - pless + dval
+        return np.asarray(1 - pless + dval, dtype=dtype)
     else:  # two-sided
-        return 2 * np.minimum(np.minimum(pless, 1 - pless + dval), 0.5)
+        return np.asarray(
+            2 * np.minimum(np.minimum(pless, 1 - pless + dval), 0.5),
+            dtype=dtype,
+        )
 
 def get_pv_bb(K, N, mu, rho, how='two-sided'):
     """

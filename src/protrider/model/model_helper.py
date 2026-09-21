@@ -14,7 +14,7 @@ from protrider.datasets import (OutriderDataset, ProtriderDataset,
 from protrider.stats import fit_residuals, get_pvals
 
 from .model import (MSEBCELoss, NegativeBinomialLoss,  # masked
-                    OmicAutoencoder, train)
+                    OmicAutoencoder, outrider_expected_counts, train)
 
 __all__ = ['init_model', 'find_latent_dim']
 
@@ -59,7 +59,7 @@ def find_latent_dim(dataset: Union[ProtriderDataset, OutriderDataset], method='O
         elif model.model_type == "outrider":
             _, theta = model.get_dispersion_parameters()
             loss, reconstruction_loss, bce_loss = criterion(
-                (theta, torch.exp(X_out) * dataset.size_factors.to(X_out.device)),
+                (theta, outrider_expected_counts(X_out, dataset.size_factors)),
                 dataset.raw_x,
                 detached=True)
         logger.info(f'\tInitial loss after model init: %s, {loss_fn}_loss: %s, bce_loss: %s',

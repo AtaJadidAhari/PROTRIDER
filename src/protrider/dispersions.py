@@ -30,35 +30,58 @@ class OutriderDispersion():
         #super().__init__(analysis='outrider', distribution=distribution)
         self.distribution = distribution
         self.theta = None
+        self.mean_scale = None
 
     def get_parameters(self):
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
-        # The decoder bias supplies each gene's baseline expression, so the
-        # compatibility ``mu`` value is fixed to one rather than fitted.
-        return (None if theta is None else torch.ones_like(self.theta).detach().cpu().numpy(), theta)
+        mean_scale = self.mean_scale
+        if mean_scale is None and self.theta is not None:
+            # A trained autoencoder supplies gene baselines through its decoder
+            # bias, so its effective post-fit scale is one.
+            mean_scale = torch.ones_like(self.theta)
+        mean_scale = None if mean_scale is None else mean_scale.detach().cpu().numpy()
+        return mean_scale, theta
     
-    def set_dispersion(self, theta):
+    def set_dispersion(self, theta, mean_scale=None):
         self.theta = theta
+        self.mean_scale = mean_scale
 
     def clip_theta(self, lower=0.01, upper=1000):
         self.theta = torch.clip(self.theta, lower, upper)
 
-    def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01, upper_bound=1000.0, device=None):
+    def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01,
+            upper_bound=1000.0, device=None, fit_mean_scale=False):
         """
         x_true, x_pred: torch.Tensor, shape (samples, genes). ``x_pred`` is
         the full expected-count matrix, not a normalized mean.
+
+        ``fit_mean_scale`` is reserved for PCA/no-training correction, where
+        OUTRIDER fits a per-gene mean multiplier together with theta. A trained
+        autoencoder uses its decoder bias instead.
         """
 
         if x_true.shape != x_pred.shape:
             raise ValueError("OUTRIDER theta fitting requires matching samples x genes matrices.")
         device = device or x_true.device
-        x_true = x_true.to(dtype=torch.float32, device=device)
-        x_pred = x_pred.to(dtype=torch.float32, device=device)
+        dtype = x_pred.dtype
+        x_true = x_true.to(dtype=dtype, device=device)
+        x_pred = x_pred.to(dtype=dtype, device=device)
         theta_init = estimate_theta_robust_moments(x_true, lower_bound, upper_bound)
         p_theta = nn.Parameter(torch.log(torch.clamp(theta_init - lower_bound, min=1e-8)))
+        parameters = [p_theta]
+
+        p_mean_scale = None
+        if fit_mean_scale:
+            mean_scale_init = torch.mean(
+                x_true / torch.clamp(x_pred, min=torch.finfo(dtype).tiny), dim=0
+            ).clamp(min=lower_bound)
+            p_mean_scale = nn.Parameter(
+                torch.log(torch.clamp(mean_scale_init - lower_bound, min=1e-8))
+            )
+            parameters.append(p_mean_scale)
 
         optimizer = optim.LBFGS(
-            [p_theta],
+            parameters,
             max_iter=max_iter,
             history_size=5,
             tolerance_change=2.2e-9,
@@ -69,13 +92,20 @@ class OutriderDispersion():
             optimizer.zero_grad()
             
             theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).unsqueeze(0)
-            loss = self.distribution.loss(x_true, theta, x_pred)
+            expected = x_pred
+            if p_mean_scale is not None:
+                expected = expected * (torch.exp(p_mean_scale) + lower_bound).unsqueeze(0)
+            loss = self.distribution.loss(x_true, theta, expected)
             loss.backward()
             return loss
 
         optimizer.step(closure)
 
         self.theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).detach()
+        self.mean_scale = (
+            (torch.exp(p_mean_scale) + lower_bound).detach()
+            if p_mean_scale is not None else None
+        )
 
 class FraserDispersion(): 
     def __init__(self, distribution: Optional[str] = None):
@@ -174,8 +204,9 @@ class NegativeBinomialDistribution(Distribution):
         Initialize theta and mu for fitting: theta is dispersion, mu_scale the mean
         x_true, size_factors: torch.Tensor, shape (genes, samples)
         """
-        x_true = x_true.to(torch.float32)
-        size_factors = size_factors.to(torch.float32)
+        dtype = size_factors.dtype
+        x_true = x_true.to(dtype=dtype)
+        size_factors = size_factors.to(dtype=dtype)
         normalized = x_true / (size_factors + epsilon)
         
         # Calculate mean and var per gene (dim=1)
