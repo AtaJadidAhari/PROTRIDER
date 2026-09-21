@@ -51,11 +51,15 @@ counts. OUTRIDER uses `log((count + 1) / size_factor)` as input and the
 negative-binomial expected count `size_factor * exp(decoder_output)` throughout
 training and scoring. FPKM filtering uses `fpkm_percentile: 0.95` by default,
 which retains genes above the cutoff in the upper 5% of samples.
+When autoencoder training is disabled, the PCA-only path additionally fits the per-gene mean multiplier used by the original OUTRIDER PCA correction.
+
+Set `outrider_precision` to `float32` (default) or `float64`. The selected precision is used for OUTRIDER preprocessing, model parameters, dispersion fitting, inference, and statistical result arrays. OUTRIDER always uses the natural-log transform, supports OHT or a fixed latent dimension, and currently rejects grid-search injection and cross-validation because those count-scale paths are not implemented consistently.
 
 OUTRIDER outputs `expected_counts.csv` and `residuals.csv`; the latter is
 observed count minus expected count. `df_expected_counts` and
 `df_raw_residuals` expose the same matrices in the Python API. OUTRIDER
 adjusts p-values independently for each sample across its genes.
+The final checkpoint is written after the definitive full-cohort dispersion fit and records theta, effective mean scale, size factors, identifiers, filtering metadata, and configuration.
 
 ### Configuration file
 
