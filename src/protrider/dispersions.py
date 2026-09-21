@@ -31,6 +31,18 @@ class OutriderDispersion():
         self.distribution = distribution
         self.theta = None
         self.mean_scale = None
+        self._counts_cache = None
+
+    def _count_constants(self, counts, lower_bound, upper_bound):
+        """Reuse count-only calculations until the tensor or its contents change."""
+        key = (counts._version, counts.dtype, counts.device, lower_bound, upper_bound)
+        cached = self._counts_cache
+        if cached is None or cached[0] is not counts or cached[1] != key:
+            with torch.no_grad():
+                theta_init = estimate_theta_robust_moments(counts, lower_bound, upper_bound)
+                count_lgamma = torch.lgamma(counts + 1)
+            self._counts_cache = (counts, key, theta_init, count_lgamma)
+        return self._counts_cache[2:]
 
     def get_parameters(self):
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
@@ -66,7 +78,10 @@ class OutriderDispersion():
         dtype = x_pred.dtype
         x_true = x_true.to(dtype=dtype, device=device)
         x_pred = x_pred.to(dtype=dtype, device=device)
-        theta_init = estimate_theta_robust_moments(x_true, lower_bound, upper_bound)
+        theta_init, count_lgamma = self._count_constants(x_true, lower_bound, upper_bound)
+        # Expected counts remain fixed during theta-only optimization. The PCA
+        # mean-scale fit must recompute this term as its mean changes.
+        count_log_mu = None if fit_mean_scale else torch.xlogy(x_true, x_pred)
         p_theta = nn.Parameter(torch.log(torch.clamp(theta_init - lower_bound, min=1e-8)))
         parameters = [p_theta]
 
@@ -95,7 +110,13 @@ class OutriderDispersion():
             expected = x_pred
             if p_mean_scale is not None:
                 expected = expected * (torch.exp(p_mean_scale) + lower_bound).unsqueeze(0)
-            loss = self.distribution.loss(x_true, theta, expected)
+            if type(self.distribution) is NegativeBinomialDistribution:
+                loss = self.distribution.loss(
+                    x_true, theta, expected,
+                    count_lgamma=count_lgamma, count_log_mu=count_log_mu,
+                )
+            else:
+                loss = self.distribution.loss(x_true, theta, expected)
             loss.backward()
             return loss
 
@@ -223,10 +244,12 @@ class NegativeBinomialDistribution(Distribution):
         mu_scale = torch.clamp(mu_scale, min=mu_min)
         return mu_scale, theta
 
-    def loss(self, x_true, theta, mu):
-        term_lgamma = torch.lgamma(x_true + theta) - torch.lgamma(theta) - torch.lgamma(x_true + 1)
+    def loss(self, x_true, theta, mu, *, count_lgamma=None, count_log_mu=None):
+        if count_lgamma is None:
+            count_lgamma = torch.lgamma(x_true + 1)
+        term_lgamma = torch.lgamma(x_true + theta) - torch.lgamma(theta) - count_lgamma
         term_t_log_t = torch.xlogy(theta, theta)
-        term_x_log_m = torch.xlogy(x_true, mu)
+        term_x_log_m = torch.xlogy(x_true, mu) if count_log_mu is None else count_log_mu
         term_tx_log_tm = torch.xlogy(x_true + theta, theta + mu)
         
         log_prob = term_lgamma + term_t_log_t + term_x_log_m - term_tx_log_tm

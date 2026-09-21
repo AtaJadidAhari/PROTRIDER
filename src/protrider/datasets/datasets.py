@@ -298,7 +298,21 @@ class OutriderDataset(Dataset, PCADataset):
         return len(self.X)
 
     def __getitem__(self, idx):
+        if isinstance(idx, list):
+            # A batch sampler supplies all row indices together, avoiding
+            # per-sample GPU indexing and subsequent stacking by DataLoader.
+            idx = torch.as_tensor(idx, dtype=torch.long, device=self.X.device)
         return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, self.raw_x[idx], self.size_factors[idx])
+
+    def perform_svd(self):
+        """Reuse the PCA decomposition when latent-dimension selection already computed it."""
+        previous = getattr(self, "_svd_input", None)
+        if previous is not None and np.array_equal(previous, self.centered_log_data_noNA):
+            return
+        super().perform_svd()
+        # NumPy arrays have no mutation counter; a snapshot also detects
+        # in-place changes to the transformed input.
+        self._svd_input = self.centered_log_data_noNA.copy()
 
     def filter_genes_by_fpkm(self, fpkm_matrix, fpkm_cutoff=1, percentile=0.95):
         """

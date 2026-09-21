@@ -372,9 +372,17 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
     # start data;pader
     if batch_size is None:
         batch_size = dataset.X.shape[0]
-    data_loader = torch.utils.data.DataLoader(dataset,
-                                              batch_size=batch_size,
-                                              shuffle=True)
+    if model.model_type == "outrider":
+        # Preserve RandomSampler's order and DataLoader's RNG consumption while
+        # fetching complete tensor batches without sample-by-sample collation.
+        sampler = torch.utils.data.BatchSampler(
+            torch.utils.data.RandomSampler(dataset), batch_size, drop_last=False
+        )
+        data_loader = torch.utils.data.DataLoader(dataset, sampler=sampler, batch_size=None)
+    else:
+        data_loader = torch.utils.data.DataLoader(dataset,
+                                                batch_size=batch_size,
+                                                shuffle=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = (None if model.model_type == "outrider" else
@@ -384,7 +392,10 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
     best_loss = float("inf")
     train_losses = []
     for epoch in tqdm(range(n_epochs)):
-        running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
+        running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(
+            data_loader, model, criterion, optimizer,
+            collect_losses=model.model_type != "outrider",
+        )
 
         if model.model_type == "outrider":
             running_loss, running_reconstruction_loss, running_bce_loss = _fit_and_evaluate_outrider(
@@ -423,22 +434,16 @@ def _fit_and_evaluate_outrider(dataset, model, criterion, batch_size=None):
 
     model.fit_dispersion(dataset.raw_x, expected)
     model.dispersion.clip_theta()
-    theta = torch.as_tensor(
-        model.get_dispersion_parameters()[1],
-        dtype=expected.dtype,
-        device=expected.device,
-    )
+    theta = model.dispersion.theta
     loss, reconstruction_loss, bce_loss = criterion(
         (theta, expected), dataset.raw_x, dataset.torch_mask
     )
-    return (
-        float(loss.detach().cpu()),
-        float(reconstruction_loss.detach().cpu()),
-        bce_loss,
-    )
+    # Without presence/absence modelling, the OUTRIDER loss is its NLL.
+    loss_value = float(loss.detach().cpu())
+    return loss_value, loss_value, bce_loss
 
 
-def _train_iteration(data_loader, model, criterion, optimizer):
+def _train_iteration(data_loader, model, criterion, optimizer, collect_losses=True):
     model.train()
     running_loss = 0.0
     running_reconstruction_loss = 0.0
@@ -460,7 +465,7 @@ def _train_iteration(data_loader, model, criterion, optimizer):
 
         # Calculate loss
         if model.model_type == "outrider":
-            _, theta = model.get_dispersion_parameters()
+            theta = model.dispersion.theta
 
             x_pred = outrider_expected_counts(x_hat, size_factors)
             loss, reconstruction_loss, bce_loss = criterion((theta, x_pred), raw_x, mask)
@@ -484,9 +489,10 @@ def _train_iteration(data_loader, model, criterion, optimizer):
                 model.dispersion.clip_rho()
 
         # Gather data and report
-        running_loss += loss.item()
-        running_reconstruction_loss += reconstruction_loss.item()
-        running_bce_loss += bce_loss.item() if bce_loss is not None else 0
+        if collect_losses:
+            running_loss += loss.item()
+            running_reconstruction_loss += reconstruction_loss.item()
+            running_bce_loss += bce_loss.item() if bce_loss is not None else 0
         n_batches += 1
 
     return running_loss / n_batches, running_reconstruction_loss / n_batches, running_bce_loss / n_batches
