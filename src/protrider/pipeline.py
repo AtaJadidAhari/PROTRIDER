@@ -848,7 +848,8 @@ def _run_protrider_standard(
                             fpkm_percentile=config.fpkm_percentile,
                             gtf=config.gtf,
                             device=config.device_torch,
-                            input_format=config.input_format)
+                            input_format=config.input_format,
+                            dtype=config.outrider_torch_dtype)
 
     # 1.5 Determine checkpoint path and try to load existing model
     model = None
@@ -976,6 +977,13 @@ def _run_protrider_standard(
                                     theta=theta,
                                     dis=config.pval_dist,
                                     n_jobs=config.n_jobs)
+    if config.analysis == "outrider":
+        pvals = np.asarray(pvals, dtype=config.outrider_numpy_dtype)
+        Z = np.asarray(Z, dtype=config.outrider_numpy_dtype)
+        if pvals_one_sided is not None:
+            pvals_one_sided = np.asarray(
+                pvals_one_sided, dtype=config.outrider_numpy_dtype
+            )
     timer.step('Computing p-values')
     group_ids = dataset.intron_ranges["gene_id"] if config.analysis == "fraser" else None
     pvals_adj, gene_level_info = adjust_pvals(pvals, method=config.pval_adj, group_ids=group_ids,
@@ -983,6 +991,8 @@ def _run_protrider_standard(
                                               index=dataset.data.columns if config.analysis == "fraser" else dataset.data.index,
                                               columns=dataset.data.index if config.analysis == "fraser" else dataset.data.columns,
                                               transpose=config.analysis == "fraser")
+    if config.analysis == "outrider":
+        pvals_adj = np.asarray(pvals_adj, dtype=config.outrider_numpy_dtype)
     timer.step('Adjusting p-values')
     #  df_res for Fraser from here on is the actual delta psi
     if config.analysis == "fraser":
@@ -992,7 +1002,9 @@ def _run_protrider_standard(
         # public residual field now has its literal observed-minus-expected
         # meaning; df_expected_counts retains the scoring matrix explicitly.
         df_expected_counts = df_res.copy()
-        df_res = dataset.raw_counts_filtered - df_expected_counts
+        df_res = (dataset.raw_counts_filtered - df_expected_counts).astype(
+            config.outrider_numpy_dtype
+        )
     else:
         df_expected_counts = None
 
