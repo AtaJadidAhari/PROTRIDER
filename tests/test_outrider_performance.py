@@ -10,7 +10,7 @@ from torch.utils.data import BatchSampler, DataLoader, RandomSampler
 from protrider.datasets.datasets import OutriderDataset
 from protrider.dispersions import NegativeBinomialDistribution, OutriderDispersion
 from protrider.estimate_theta_robust_moments import estimate_theta_robust_moments
-from protrider.model.model import train
+from protrider.model.model import train, OmicAutoencoder, _train_iteration, _fit_and_evaluate_outrider
 
 
 DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
@@ -149,8 +149,9 @@ class _TrainingModel(torch.nn.Linear):
         ([10.0, 9.96, 9.92, 9.92], 3, False),
     ],
 )
-def test_outrider_early_stopping_uses_post_theta_nll(
-    losses, expected_epochs, expected_stopped
+@pytest.mark.parametrize("interval", [1, 10])
+def test_outrider_early_stopping_uses_current_theta_nll(
+    losses, expected_epochs, expected_stopped, interval
 ):
     model = _TrainingModel()
     with (
@@ -168,6 +169,7 @@ def test_outrider_early_stopping_uses_post_theta_nll(
             outrider_early_stopping_patience=2,
             outrider_early_stopping_min_delta=0.05,
             outrider_early_stopping_min_epochs=3,
+            outrider_theta_fit_interval=interval,
         )
 
     assert len(train_losses) == expected_epochs
@@ -180,3 +182,49 @@ def test_outrider_early_stopping_uses_post_theta_nll(
             if expected_stopped else "maximum epochs reached"
         ),
     }
+
+
+@pytest.mark.parametrize("interval", [1, 10, 50])
+def test_theta_fit_schedule_and_fixed_theta_between_fits(interval):
+    torch.manual_seed(42)
+    dataset = OutriderDataset.__new__(OutriderDataset)
+    dataset.raw_x = torch.tensor([[1., 8., 3.], [4., 2., 9.], [7., 3., 2.], [2., 6., 5.]])
+    dataset.X = torch.log1p(dataset.raw_x)
+    dataset.torch_mask = torch.zeros_like(dataset.X, dtype=torch.bool)
+    dataset.covariates = torch.empty(4, 0)
+    dataset.omic_means_torch = dataset.X.mean(dim=0)
+    dataset.size_factors = torch.ones(4, 1)
+    model = OmicAutoencoder(in_dim=3, latent_dim=2, model_type="outrider")
+    model.dispersion.set_dispersion(estimate_theta_robust_moments(dataset.raw_x, 0.01, 1000.))
+    criterion = model.set_loss("NLL")
+    epoch = 0
+    fitted_epochs = []
+    fit_dispersion = model.fit_dispersion
+
+    def run_epoch(*args, **kwargs):
+        nonlocal epoch
+        epoch += 1
+        theta_before = model.dispersion.theta.clone()
+        result = _train_iteration(*args, **kwargs)
+        torch.testing.assert_close(model.dispersion.theta, theta_before, rtol=0, atol=0)
+        return result
+
+    def fit(*args, **kwargs):
+        fitted_epochs.append(epoch)
+        assert args[0].shape == dataset.raw_x.shape
+        return fit_dispersion(*args, **kwargs)
+
+    with (
+        patch("protrider.model.model._train_iteration", side_effect=run_epoch),
+        patch.object(model, "fit_dispersion", side_effect=fit),
+        patch("protrider.model.model._fit_and_evaluate_outrider",
+              wraps=_fit_and_evaluate_outrider) as evaluate,
+    ):
+        _, _, _, losses = train(dataset, model, criterion, n_epochs=21, batch_size=2,
+                                outrider_theta_fit_interval=interval)
+
+    # The final fit at epoch 21 follows restoration of the best weights.
+    assert fitted_epochs == list(range(interval, 22, interval)) + [21]
+    assert evaluate.call_count == 22
+    assert len(losses) == 21
+    assert np.isfinite(losses).all()

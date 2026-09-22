@@ -927,7 +927,8 @@ def _run_protrider_standard(
                                       outrider_early_stopping=config.outrider_early_stopping,
                                       outrider_early_stopping_patience=config.outrider_early_stopping_patience,
                                       outrider_early_stopping_min_delta=config.outrider_early_stopping_min_delta,
-                                      outrider_early_stopping_min_epochs=config.outrider_early_stopping_min_epochs)
+                                      outrider_early_stopping_min_epochs=config.outrider_early_stopping_min_epochs,
+                                      outrider_theta_fit_interval=config.outrider_theta_fit_interval)
         timer.step('Fitting model')
 
         df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion, batch_size=config.batch_size)

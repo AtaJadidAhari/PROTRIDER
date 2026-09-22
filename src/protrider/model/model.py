@@ -387,7 +387,12 @@ def train(
     outrider_early_stopping_patience=5,
     outrider_early_stopping_min_delta=1e-5,
     outrider_early_stopping_min_epochs=10,
+    outrider_theta_fit_interval=1,
 ):
+    if model.model_type == "outrider" and (
+        type(outrider_theta_fit_interval) is not int or outrider_theta_fit_interval < 1
+    ):
+        raise ValueError("outrider_theta_fit_interval must be a positive integer.")
     # start data;pader
     if batch_size is None:
         batch_size = dataset.X.shape[0]
@@ -423,7 +428,8 @@ def train(
 
         if model.model_type == "outrider":
             running_loss, running_reconstruction_loss, running_bce_loss = _fit_and_evaluate_outrider(
-                dataset, model, criterion, batch_size=batch_size
+                dataset, model, criterion, batch_size=batch_size,
+                refit_theta=(epoch + 1) % outrider_theta_fit_interval == 0,
             )
             logger.info("[%d] OUTRIDER full-cohort NLL: %.6f", epoch + 1, running_loss)
         else:
@@ -475,8 +481,8 @@ def train(
     return running_loss, running_reconstruction_loss, running_bce_loss, train_losses
 
 
-def _fit_and_evaluate_outrider(dataset, model, criterion, batch_size=None):
-    """Fit theta and evaluate OUTRIDER on the complete cohort."""
+def _fit_and_evaluate_outrider(dataset, model, criterion, batch_size=None, refit_theta=True):
+    """Evaluate the complete cohort, optionally refitting theta first."""
     with torch.no_grad():
         model.eval()
         output = _forward_outrider_in_batches(
@@ -484,8 +490,9 @@ def _fit_and_evaluate_outrider(dataset, model, criterion, batch_size=None):
         )
         expected = outrider_expected_counts(output, dataset.size_factors)
 
-    model.fit_dispersion(dataset.raw_x, expected)
-    model.dispersion.clip_theta()
+    if refit_theta:
+        model.fit_dispersion(dataset.raw_x, expected)
+        model.dispersion.clip_theta()
     theta = model.dispersion.theta
     loss, reconstruction_loss, bce_loss = criterion(
         (theta, expected), dataset.raw_x, dataset.torch_mask
@@ -533,7 +540,7 @@ def _train_iteration(data_loader, model, criterion, optimizer, collect_losses=Tr
         loss.backward()
         optimizer.step()
 
-        # OUTRIDER dispersion is updated once per complete epoch in train(),
+        # OUTRIDER dispersion is updated at the configured epoch interval in train(),
         # never from a mini-batch.
         if model.model_type == "fraser":
             with torch.no_grad():

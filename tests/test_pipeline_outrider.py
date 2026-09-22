@@ -10,11 +10,14 @@ import pandas as pd
 import tempfile
 from pathlib import Path
 import torch
+import pytest
+from unittest.mock import patch
 from scipy.special import gammaln
 
 from protrider import ProtriderConfig, run
 from protrider.pipeline import Result
 from protrider.model import ModelInfo
+from protrider.dispersions import OutriderDispersion
 
 
 class TestPipelineOUTRIDER:
@@ -59,8 +62,9 @@ class TestPipelineOUTRIDER:
             assert result.df_pvals.shape == (n_samples, n_proteins)
             assert result.df_Z.shape == (n_samples, n_proteins)
 
+    @pytest.mark.parametrize("interval", [1, 10])
     def test_final_statistics_and_checkpoint_share_one_fit(
-        self, gene_expression_path, gene_annotation_path, tmp_path
+        self, gene_expression_path, gene_annotation_path, tmp_path, interval
     ):
         """The checkpoint and every reported statistic use the final theta fit."""
         config = ProtriderConfig(
@@ -75,10 +79,14 @@ class TestPipelineOUTRIDER:
             n_epochs=1,
             batch_size=3,
             outrider_precision="float64",
+            outrider_theta_fit_interval=interval,
             device="cpu",
         )
 
-        result, model_info = run(config)
+        with patch.object(OutriderDispersion, "fit", autospec=True,
+                          side_effect=OutriderDispersion.fit) as fit:
+            result, model_info = run(config)
+        assert fit.call_count == (1 // interval) + 2
         checkpoint = torch.load(tmp_path / "model.pt", weights_only=False)
         theta = result.dispersions["theta"].to_numpy()
 

@@ -20,6 +20,7 @@ class TestProtriderConfig:
         # Check defaults are set
         assert config.seed == 42
         assert config.n_epochs == 100
+        assert config.outrider_theta_fit_interval == 1
         assert config.lr == 1e-4
         assert config.device == "gpu"
     
@@ -157,6 +158,27 @@ class TestConfigValidation:
             outrider_early_stopping_min_epochs=3,
         )
         assert config.outrider_early_stopping
+
+    @pytest.mark.parametrize("interval", [0, -1, 1.5, "10", True, None])
+    def test_outrider_theta_fit_interval_validation(self, interval):
+        with pytest.raises(ValueError, match="outrider_theta_fit_interval must be a positive integer"):
+            ProtriderConfig(
+                input_intensities="counts.tsv", analysis="outrider",
+                autoencoder_loss="NLL", pval_dist="nb",
+                outrider_theta_fit_interval=interval,
+            )
+
+    def test_outrider_theta_fit_interval_yaml_roundtrip(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "input_intensities": "counts.tsv", "analysis": "outrider",
+            "autoencoder_loss": "NLL", "pval_dist": "nb",
+            "outrider_theta_fit_interval": 10,
+        }))
+        config = load_config(config_path)
+        assert config.outrider_theta_fit_interval == 10
+        config.save(tmp_path)
+        assert load_config(config_path).outrider_theta_fit_interval == 10
     
     def test_invalid_max_na_too_high(self):
         """Test that max_allowed_NAs_per_protein > 1 raises error."""

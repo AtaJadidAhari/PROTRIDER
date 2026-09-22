@@ -55,7 +55,9 @@ When autoencoder training is disabled, the PCA-only path additionally fits the p
 
 Set `outrider_precision` to `float32` (default) or `float64`. The selected precision is used for OUTRIDER preprocessing, model parameters, dispersion fitting, inference, and statistical result arrays. OUTRIDER always uses the natural-log transform, supports OHT or a fixed latent dimension, and currently rejects grid-search injection and cross-validation because those count-scale paths are not implemented consistently.
 
-OUTRIDER early stopping is optional and disabled by default. Enable it with `outrider_early_stopping: true`; `outrider_early_stopping_min_epochs`, `outrider_early_stopping_patience`, and `outrider_early_stopping_min_delta` control when training stops. It monitors the full-cohort negative-binomial NLL after each theta fit, restores the weights from the epoch with the lowest NLL, and refits theta for those restored weights. `n_epochs` remains the maximum number of epochs.
+Set `outrider_theta_fit_interval` to a positive integer to control theta fitting during training (default: `1`, every epoch). For example, `10` fits theta after epochs 10, 20, 30, etc. Between fits, training and loss evaluation use the current theta, starting with the robust moments estimate. Theta is always refitted after restoring the best model weights and again for final statistics, even if training ends before the next scheduled fit.
+
+OUTRIDER early stopping is optional and disabled by default. Enable it with `outrider_early_stopping: true`; `outrider_early_stopping_min_epochs`, `outrider_early_stopping_patience`, and `outrider_early_stopping_min_delta` control when training stops. It monitors the full-cohort negative-binomial NLL every epoch using the current theta, restores the weights from the epoch with the lowest NLL, and refits theta for those restored weights. Patience is counted in epochs, so early stopping can occur between theta fits. `n_epochs` remains the maximum number of epochs.
 
 OUTRIDER outputs `expected_counts.csv` and `residuals.csv`; the latter is
 observed count minus expected count. `df_expected_counts` and

@@ -45,6 +45,7 @@ class ProtriderConfig:
     fpkm_percentile: float = 0.95
     gtf: Optional[str] = "samples/data/gencode_annotation_trunc.gtf"
     outrider_precision: Literal["float32", "float64"] = "float32"
+    outrider_theta_fit_interval: int = 1
     outrider_early_stopping: bool = False
     outrider_early_stopping_patience: int = 5
     outrider_early_stopping_min_delta: float = 1e-5
@@ -189,6 +190,8 @@ class ProtriderConfig:
                 raise ValueError("OUTRIDER uses the natural-log count transformation; set log_func_name='log'.")
             if self.outrider_precision not in {"float32", "float64"}:
                 raise ValueError("outrider_precision must be 'float32' or 'float64'.")
+            if type(self.outrider_theta_fit_interval) is not int or self.outrider_theta_fit_interval < 1:
+                raise ValueError("outrider_theta_fit_interval must be a positive integer.")
             if self.outrider_early_stopping_patience < 1:
                 raise ValueError("outrider_early_stopping_patience must be at least 1.")
             if self.outrider_early_stopping_min_delta < 0:
