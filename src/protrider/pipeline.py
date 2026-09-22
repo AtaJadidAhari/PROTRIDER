@@ -891,9 +891,9 @@ def _run_protrider_standard(
 
     logger.info(
         f'Latent dimension found with method {config.find_q_method}: {q}')
-    if config.analysis == "outrider" and not 2 <= int(q) <= min(dataset.X.shape):
+    if config.analysis == "outrider" and not 1 <= int(q) <= min(dataset.X.shape):
         raise ValueError(
-            f"OUTRIDER latent dimension q={q} must be between 2 and {min(dataset.X.shape)}."
+            f"OUTRIDER latent dimension q={q} must be between 1 and {min(dataset.X.shape)}."
         )
     timer.step('Finding latent dimension')
     # 3. Init model with found latent dim

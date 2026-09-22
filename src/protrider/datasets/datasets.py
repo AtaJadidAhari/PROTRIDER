@@ -16,6 +16,7 @@ from pydeseq2.preprocessing import deseq2_norm
 from torch.utils.data import Dataset, Subset
 
 from .covariates import parse_covariates
+from .outrider_oht import outrider_oht
 from .read_inputs import (merge_split_reads, merge_unsplit_reads,
                           preprocess_protein_intensities, read)
 
@@ -236,6 +237,8 @@ class OutriderDataset(Dataset, PCADataset):
         # Match the fitted model to the retained gene set. The provisional
         # factors above are used only to calculate the expression filter.
         _, size_factors = deseq2_norm(self.raw_counts_filtered)
+        # R selects q in double precision, independently of training precision.
+        self.oht_size_factors = np.asarray(size_factors, dtype=np.float64).reshape(-1, 1)
         self.size_factors_array = np.asarray(size_factors, dtype=self.numpy_dtype).reshape(-1, 1)
         if not np.isfinite(self.size_factors_array).all() or (self.size_factors_array <= 0).any():
             raise ValueError("OUTRIDER size factors must be finite and positive after gene filtering.")
@@ -305,7 +308,7 @@ class OutriderDataset(Dataset, PCADataset):
         return (self.X[idx], self.torch_mask[idx], self.covariates[idx], self.omic_means_torch, self.raw_x[idx], self.size_factors[idx])
 
     def perform_svd(self):
-        """Reuse the PCA decomposition when latent-dimension selection already computed it."""
+        """Cache the autoencoder's PCA decomposition independently of OHT."""
         previous = getattr(self, "_svd_input", None)
         if previous is not None and np.array_equal(previous, self.centered_log_data_noNA):
             return
@@ -452,24 +455,12 @@ class OutriderDataset(Dataset, PCADataset):
         return fpkm.fillna(0.0).astype(self.numpy_dtype)
 
     def find_enc_dim_optht(self):
-        """Estimate the latent dimension with optimal hard thresholding."""
-        if self.s is None:
-            self.perform_svd()
-        n, p = self.centered_log_data_noNA.shape
-        beta = min(n, p) / max(n, p)
-        omega = np.sqrt(2 * (beta + 1) + 8 * beta /
-                        ((beta + 1) + np.sqrt(beta ** 2 + 14 * beta + 1)))
-        self.oht_threshold = float(omega * np.median(self.s))
-        q = int(np.sum(self.s > self.oht_threshold))
-        self.oht_diagnostics = {"singular_values": self.s.copy(), "threshold": self.oht_threshold, "q": q}
-        if q < 2:
-            logger.warning(
-                "OUTRIDER OHT selected q=%s, below the supported minimum; falling back to q=2.",
-                q,
-            )
-            q = 2
-            self.oht_diagnostics["q"] = q
-        return q
+        """Select q using R OUTRIDER's standardized counts, separate from PCA."""
+        self.oht_diagnostics = outrider_oht(self.raw_counts_filtered, self.oht_size_factors)
+        self.oht_threshold = self.oht_diagnostics["threshold"]
+        if self.oht_diagnostics["raw_q"] == 0:
+            logger.warning("No singular value passed OUTRIDER OHT; falling back to q=2.")
+        return self.oht_diagnostics["q"]
 
 class OmicDataset(Dataset):
     def __new__(cls, analysis, *args, **kwargs):
