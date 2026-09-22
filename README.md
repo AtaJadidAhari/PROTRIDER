@@ -55,6 +55,8 @@ When autoencoder training is disabled, the PCA-only path additionally fits the p
 
 Set `outrider_precision` to `float32` (default) or `float64`. The selected precision is used for OUTRIDER preprocessing, model parameters, dispersion fitting, inference, and statistical result arrays. OUTRIDER always uses the natural-log transform, supports OHT or a fixed latent dimension, and currently rejects grid-search injection and cross-validation because those count-scale paths are not implemented consistently.
 
+OUTRIDER early stopping is optional and disabled by default. Enable it with `outrider_early_stopping: true`; `outrider_early_stopping_min_epochs`, `outrider_early_stopping_patience`, and `outrider_early_stopping_min_delta` control when training stops. It monitors the full-cohort negative-binomial NLL after each theta fit, restores the weights from the epoch with the lowest NLL, and refits theta for those restored weights. `n_epochs` remains the maximum number of epochs.
+
 OUTRIDER outputs `expected_counts.csv` and `residuals.csv`; the latter is
 observed count minus expected count. `df_expected_counts` and
 `df_raw_residuals` expose the same matrices in the Python API. OUTRIDER

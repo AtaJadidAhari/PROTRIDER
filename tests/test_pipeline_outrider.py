@@ -43,6 +43,9 @@ class TestPipelineOUTRIDER:
             # Check result type
             assert isinstance(result, Result)
             assert isinstance(model_info, ModelInfo)
+            assert model_info.epochs_run == 2
+            assert not model_info.stopped_early
+            assert model_info.stopping_reason == "maximum epochs reached"
 
             # Check result contains expected dataframes
             assert isinstance(result.df_out, pd.DataFrame)
@@ -111,6 +114,34 @@ class TestPipelineOUTRIDER:
             result.dispersions,
             rtol=1e-6,
         )
+
+    def test_early_stopping_records_training_outcome(
+        self, gene_expression_path, gene_annotation_path, tmp_path
+    ):
+        config = ProtriderConfig(
+            out_dir=str(tmp_path),
+            analysis="outrider",
+            autoencoder_loss="NLL",
+            pval_dist="nb",
+            input_intensities=gene_expression_path,
+            gtf=gene_annotation_path,
+            index_col="geneID",
+            find_q_method="5",
+            n_epochs=4,
+            device="cpu",
+            outrider_early_stopping=True,
+            outrider_early_stopping_patience=2,
+            outrider_early_stopping_min_delta=1e6,
+            outrider_early_stopping_min_epochs=3,
+        )
+
+        _, model_info = run(config)
+
+        assert model_info.epochs_run == 3
+        assert 1 <= model_info.best_epoch <= model_info.epochs_run
+        assert model_info.stopped_early
+        assert "full-cohort NLL did not improve" in model_info.stopping_reason.item()
+        assert len(model_info.train_losses) == model_info.epochs_run
 
     def test_pca_only_run_saves_refitted_dispersion(
         self, gene_expression_path, gene_annotation_path, tmp_path

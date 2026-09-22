@@ -129,6 +129,34 @@ class TestConfigValidation:
             ProtriderConfig(**base, log_func_name="log2")
         with pytest.raises(ValueError, match="outrider_precision"):
             ProtriderConfig(**base, outrider_precision="float16")
+
+    def test_outrider_early_stopping_validation(self):
+        base = {
+            "out_dir": "output",
+            "input_intensities": "counts.tsv",
+            "analysis": "outrider",
+            "autoencoder_loss": "NLL",
+            "pval_dist": "nb",
+        }
+        with pytest.raises(ValueError, match="patience must be at least 1"):
+            ProtriderConfig(**base, outrider_early_stopping_patience=0)
+        with pytest.raises(ValueError, match="min_delta must be non-negative"):
+            ProtriderConfig(**base, outrider_early_stopping_min_delta=-1)
+        with pytest.raises(ValueError, match="cannot exceed n_epochs"):
+            ProtriderConfig(
+                **base,
+                n_epochs=2,
+                outrider_early_stopping=True,
+                outrider_early_stopping_min_epochs=3,
+            )
+
+        config = ProtriderConfig(
+            **base,
+            n_epochs=3,
+            outrider_early_stopping=True,
+            outrider_early_stopping_min_epochs=3,
+        )
+        assert config.outrider_early_stopping
     
     def test_invalid_max_na_too_high(self):
         """Test that max_allowed_NAs_per_protein > 1 raises error."""

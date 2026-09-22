@@ -923,7 +923,11 @@ def _run_protrider_standard(
     if config.autoencoder_training and not loaded_checkpoint:
         logger.info('Fitting model')
         _, _, _, train_losses = train(dataset, model, criterion, n_epochs=config.n_epochs,
-                                      learning_rate=float(config.lr), batch_size=config.batch_size)
+                                      learning_rate=float(config.lr), batch_size=config.batch_size,
+                                      outrider_early_stopping=config.outrider_early_stopping,
+                                      outrider_early_stopping_patience=config.outrider_early_stopping_patience,
+                                      outrider_early_stopping_min_delta=config.outrider_early_stopping_min_delta,
+                                      outrider_early_stopping_min_epochs=config.outrider_early_stopping_min_epochs)
         timer.step('Fitting model')
 
         df_out, theta, df_presence, final_loss, final_reconstruction_loss, final_bce_loss = _inference(dataset, model, criterion, batch_size=config.batch_size)
@@ -1024,11 +1028,41 @@ def _run_protrider_standard(
                              gene_level_info=gene_level_info, latent_values=latent_values,
                              dispersions=theta, mu=mu,
                              expected_counts=df_expected_counts if config.analysis == "outrider" else None)
+    outrider_training_info = None
+    if config.analysis == "outrider":
+        if config.autoencoder_training and not loaded_checkpoint:
+            outrider_training_info = model.outrider_training_info
+        else:
+            outrider_training_info = {
+                "epochs_run": 0,
+                "best_epoch": np.nan,
+                "stopped_early": False,
+                "stopping_reason": (
+                    "checkpoint loaded" if loaded_checkpoint else "training disabled"
+                ),
+            }
+
     model_info = ModelInfo(q=np.array(q), learning_rate=np.array(config.lr),
                            n_epochs=np.array(config.n_epochs), test_loss=np.array(final_loss),
                            train_losses=np.array(train_losses), df_folds=None,
                            final_consistent_nll=(
                                np.array(final_loss) if config.analysis == "outrider" else None
+                           ),
+                           epochs_run=(
+                               np.array(outrider_training_info["epochs_run"])
+                               if outrider_training_info is not None else None
+                           ),
+                           best_epoch=(
+                               np.array(outrider_training_info["best_epoch"])
+                               if outrider_training_info is not None else None
+                           ),
+                           stopped_early=(
+                               np.array(outrider_training_info["stopped_early"])
+                               if outrider_training_info is not None else None
+                           ),
+                           stopping_reason=(
+                               np.array(outrider_training_info["stopping_reason"])
+                               if outrider_training_info is not None else None
                            ))
     timer.step('Finalizing model')
     return result, model_info

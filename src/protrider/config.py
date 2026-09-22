@@ -45,6 +45,10 @@ class ProtriderConfig:
     fpkm_percentile: float = 0.95
     gtf: Optional[str] = "samples/data/gencode_annotation_trunc.gtf"
     outrider_precision: Literal["float32", "float64"] = "float32"
+    outrider_early_stopping: bool = False
+    outrider_early_stopping_patience: int = 5
+    outrider_early_stopping_min_delta: float = 1e-5
+    outrider_early_stopping_min_epochs: int = 10
     
     # Preprocessing params
     max_allowed_NAs_per_protein: float = 0.3
@@ -185,12 +189,28 @@ class ProtriderConfig:
                 raise ValueError("OUTRIDER uses the natural-log count transformation; set log_func_name='log'.")
             if self.outrider_precision not in {"float32", "float64"}:
                 raise ValueError("outrider_precision must be 'float32' or 'float64'.")
+            if self.outrider_early_stopping_patience < 1:
+                raise ValueError("outrider_early_stopping_patience must be at least 1.")
+            if self.outrider_early_stopping_min_delta < 0:
+                raise ValueError("outrider_early_stopping_min_delta must be non-negative.")
+            if self.outrider_early_stopping_min_epochs < 1:
+                raise ValueError("outrider_early_stopping_min_epochs must be at least 1.")
+            if (
+                self.outrider_early_stopping
+                and self.outrider_early_stopping_min_epochs > self.n_epochs
+            ):
+                raise ValueError(
+                    "outrider_early_stopping_min_epochs cannot exceed n_epochs "
+                    "when OUTRIDER early stopping is enabled."
+                )
             if self.fpkmCutoff is not None and self.fpkmCutoff < 0:
                 raise ValueError("fpkmCutoff must be non-negative.")
             if not 0 < self.fpkm_percentile <= 1:
                 raise ValueError("fpkm_percentile must be in (0, 1].")
             if self.fpkmCutoff is not None and not self.gtf:
                 raise ValueError("A GTF is required when OUTRIDER FPKM filtering is enabled.")
+        elif self.outrider_early_stopping:
+            raise ValueError("outrider_early_stopping is only available for OUTRIDER analysis.")
         
         # Set log_func and base_fn based on log_func_name
         if self.log_func_name == "log2":

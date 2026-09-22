@@ -13,6 +13,10 @@ analysis: "outrider"
 fpkmCutoff: 1
 gtf: "samples/data/gencode_annotation_trunc.gtf"
 outrider_precision: "float32" # float32 or float64
+outrider_early_stopping: false # optional; monitors full-cohort NLL after theta fitting
+outrider_early_stopping_patience: 5
+outrider_early_stopping_min_delta: 1e-5
+outrider_early_stopping_min_epochs: 10
 
 # seed parameter for reproducibility
 seed: 42

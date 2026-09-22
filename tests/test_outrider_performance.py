@@ -10,6 +10,7 @@ from torch.utils.data import BatchSampler, DataLoader, RandomSampler
 from protrider.datasets.datasets import OutriderDataset
 from protrider.dispersions import NegativeBinomialDistribution, OutriderDispersion
 from protrider.estimate_theta_robust_moments import estimate_theta_robust_moments
+from protrider.model.model import train
 
 
 DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
@@ -123,3 +124,59 @@ def test_svd_reuse_detects_in_place_changes():
         assert svd.call_count == 2
     expected = np.linalg.svd(dataset.centered_log_data_noNA, full_matrices=False)
     np.testing.assert_array_equal(dataset.Vt, expected[2])
+
+
+class _TrainingDataset:
+    X = torch.zeros(4, 2)
+
+    def __len__(self):
+        return len(self.X)
+
+
+class _TrainingModel(torch.nn.Linear):
+    model_type = "outrider"
+
+    def __init__(self):
+        super().__init__(2, 2)
+
+
+@pytest.mark.parametrize(
+    ("losses", "expected_epochs", "expected_stopped"),
+    [
+        ([10.0, 9.99, 9.98, 9.98], 3, True),
+        # Sub-threshold improvements accumulate against the last significant
+        # loss, so 9.92 resets patience relative to 10.0.
+        ([10.0, 9.96, 9.92, 9.92], 3, False),
+    ],
+)
+def test_outrider_early_stopping_uses_post_theta_nll(
+    losses, expected_epochs, expected_stopped
+):
+    model = _TrainingModel()
+    with (
+        patch("protrider.model.model._train_iteration", return_value=(0.0, 0.0, None)),
+        patch("protrider.model.model._fit_and_evaluate_outrider", side_effect=[
+            (loss, loss, None) for loss in losses
+        ]),
+    ):
+        _, _, _, train_losses = train(
+            _TrainingDataset(),
+            model,
+            criterion=None,
+            n_epochs=3,
+            outrider_early_stopping=True,
+            outrider_early_stopping_patience=2,
+            outrider_early_stopping_min_delta=0.05,
+            outrider_early_stopping_min_epochs=3,
+        )
+
+    assert len(train_losses) == expected_epochs
+    assert model.outrider_training_info == {
+        "epochs_run": expected_epochs,
+        "best_epoch": 3,
+        "stopped_early": expected_stopped,
+        "stopping_reason": (
+            "full-cohort NLL did not improve by more than 0.05 for 2 epochs"
+            if expected_stopped else "maximum epochs reached"
+        ),
+    }

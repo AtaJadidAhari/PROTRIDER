@@ -58,6 +58,10 @@ class ModelInfo:
     df0: np.array = None  # Degrees of freedom for the t-distribution, if applicable
     df_folds: Optional[pd.DataFrame] = None  # DataFrame with fold assignments (for CV runs)
     final_consistent_nll: Optional[np.array] = None
+    epochs_run: Optional[np.array] = None
+    best_epoch: Optional[np.array] = None
+    stopped_early: Optional[np.array] = None
+    stopping_reason: Optional[np.array] = None
     
     def save(self, out_dir: str) -> None:
         """
@@ -77,8 +81,12 @@ class ModelInfo:
         model_info_dict = dataclasses.asdict(self)
 
         # Keep the established PROTRIDER/FRASER report schema unchanged.
-        if model_info_dict.get("final_consistent_nll") is None:
-            model_info_dict.pop("final_consistent_nll")
+        for field_name in (
+            "final_consistent_nll", "epochs_run", "best_epoch",
+            "stopped_early", "stopping_reason",
+        ):
+            if model_info_dict.get(field_name) is None:
+                model_info_dict.pop(field_name)
         
         # Remove df_folds from model_info_dict to handle separately
         df_folds = model_info_dict.pop("df_folds", None)
@@ -368,7 +376,18 @@ def train_val(train_subset: ProtriderSubset, val_subset: ProtriderSubset, model,
     return np.array(train_losses), np.array(val_losses)
 
 
-def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_size=None):
+def train(
+    dataset,
+    model,
+    criterion,
+    n_epochs=100,
+    learning_rate=1e-3,
+    batch_size=None,
+    outrider_early_stopping=False,
+    outrider_early_stopping_patience=5,
+    outrider_early_stopping_min_delta=1e-5,
+    outrider_early_stopping_min_epochs=10,
+):
     # start data;pader
     if batch_size is None:
         batch_size = dataset.X.shape[0]
@@ -390,6 +409,11 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
 
     best_model_wts = copy.deepcopy(model.state_dict())  # placeholder
     best_loss = float("inf")
+    best_epoch = 0
+    significant_loss = float("inf")
+    epochs_without_significant_improvement = 0
+    stopped_early = False
+    stopping_reason = "maximum epochs reached"
     train_losses = []
     for epoch in tqdm(range(n_epochs)):
         running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(
@@ -410,7 +434,29 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
         if running_loss < best_loss:
             best_loss = running_loss
             best_model_wts = copy.deepcopy(model.state_dict())  # save weights
+            best_epoch = epoch + 1
         train_losses.append(running_loss)
+
+        if model.model_type == "outrider" and outrider_early_stopping:
+            if significant_loss - running_loss > outrider_early_stopping_min_delta:
+                significant_loss = running_loss
+                epochs_without_significant_improvement = 0
+            else:
+                epochs_without_significant_improvement += 1
+
+            if (
+                epoch + 1 >= outrider_early_stopping_min_epochs
+                and epochs_without_significant_improvement
+                >= outrider_early_stopping_patience
+            ):
+                stopped_early = True
+                stopping_reason = (
+                    "full-cohort NLL did not improve by more than "
+                    f"{outrider_early_stopping_min_delta:g} for "
+                    f"{outrider_early_stopping_patience} epochs"
+                )
+                logger.info("OUTRIDER early stopping at epoch %d: %s", epoch + 1, stopping_reason)
+                break
     
     model.load_state_dict(best_model_wts)
 
@@ -419,6 +465,12 @@ def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_siz
         running_loss, running_reconstruction_loss, running_bce_loss = _fit_and_evaluate_outrider(
             dataset, model, criterion, batch_size=batch_size
         )
+        model.outrider_training_info = {
+            "epochs_run": len(train_losses),
+            "best_epoch": best_epoch,
+            "stopped_early": stopped_early,
+            "stopping_reason": stopping_reason,
+        }
 
     return running_loss, running_reconstruction_loss, running_bce_loss, train_losses
 
