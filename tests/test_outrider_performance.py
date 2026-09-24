@@ -83,6 +83,34 @@ def test_count_cache_reuses_estimate_and_invalidates_changed_counts_or_bounds():
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("fit_mean_scale", [False, True])
+def test_chunked_theta_fit_matches_full_cohort(device, dtype, fit_mean_scale):
+    counts = torch.tensor(
+        [[0, 10, 700], [5, 2, 900], [25, 0, 300], [2, 30, 1100],
+         [3, 8, 400], [20, 5, 200], [9, 0, 650]],
+        device=device, dtype=dtype,
+    )
+    expected = counts.cpu() * 0.7 + 2
+    full = OutriderDispersion()
+    chunked = OutriderDispersion()
+    # Use a double-precision full-cohort reference: float32 LBFGS can stop at
+    # different points when the likelihood's reduction order changes.
+    full.fit(counts.double(), expected.to(device).double(), max_iter=20,
+             fit_mean_scale=fit_mean_scale)
+    with patch.object(chunked.distribution, "loss", wraps=chunked.distribution.loss) as loss:
+        chunked.fit(counts, expected, max_iter=20, fit_mean_scale=fit_mean_scale,
+                    batch_size=2)
+    assert loss.call_count > 1
+    assert all(call.args[0].shape[0] <= 2 for call in loss.call_args_list)
+    torch.testing.assert_close(chunked.theta.double(), full.theta, rtol=2e-4, atol=2e-4)
+    if fit_mean_scale:
+        torch.testing.assert_close(chunked.mean_scale.double(), full.mean_scale,
+                                   rtol=2e-4, atol=2e-4)
+    assert chunked._counts_cache[3] is None  # no retained full-size likelihood matrix
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("batch_size", [3, 7])
 def test_tensor_batches_preserve_shuffle_order_and_rng(device, batch_size):
     dataset = OutriderDataset.__new__(OutriderDataset)

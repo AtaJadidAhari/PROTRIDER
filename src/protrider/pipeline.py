@@ -967,15 +967,30 @@ def _run_protrider_standard(
         expected_tensor = torch.as_tensor(
             df_res.to_numpy(dtype=config.outrider_numpy_dtype),
             dtype=config.outrider_torch_dtype,
-            device=dataset.X.device,
         )
         theta_tensor = torch.as_tensor(
             theta, dtype=config.outrider_torch_dtype, device=dataset.X.device
         )
-        final_loss, final_reconstruction_loss, final_bce_loss = criterion(
-            (theta_tensor, expected_tensor), dataset.raw_x, dataset.torch_mask, detached=True
-        )
-        final_loss = float(final_loss)
+        if config.batch_size is None:
+            final_loss, final_reconstruction_loss, final_bce_loss = criterion(
+                (theta_tensor, expected_tensor.to(dataset.X.device)),
+                dataset.raw_x, dataset.torch_mask, detached=True
+            )
+            final_loss = float(final_loss)
+        else:
+            weighted_loss = 0.0
+            observations = 0
+            with torch.no_grad():
+                for start in range(0, len(dataset.raw_x), config.batch_size):
+                    stop = min(start + config.batch_size, len(dataset.raw_x))
+                    chunk_loss, _, _ = criterion(
+                        (theta_tensor, expected_tensor[start:stop].to(dataset.X.device)),
+                        dataset.raw_x[start:stop], dataset.torch_mask[start:stop],
+                    )
+                    count = int((~dataset.torch_mask[start:stop]).sum())
+                    weighted_loss += float(chunk_loss) * count
+                    observations += count
+            final_loss = weighted_loss / observations
         logger.info("Final consistent OUTRIDER NLL: %.6f", final_loss)
     latent_values = model.get_latent_values()
     timer.step('Fitting residuals')

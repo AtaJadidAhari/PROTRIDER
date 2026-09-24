@@ -33,14 +33,19 @@ class OutriderDispersion():
         self.mean_scale = None
         self._counts_cache = None
 
-    def _count_constants(self, counts, lower_bound, upper_bound):
+    def _count_constants(self, counts, lower_bound, upper_bound, batched=False):
         """Reuse count-only calculations until the tensor or its contents change."""
-        key = (counts._version, counts.dtype, counts.device, lower_bound, upper_bound)
+        key = (counts._version, counts.dtype, counts.device, lower_bound, upper_bound, batched)
         cached = self._counts_cache
         if cached is None or cached[0] is not counts or cached[1] != key:
             with torch.no_grad():
-                theta_init = estimate_theta_robust_moments(counts, lower_bound, upper_bound)
-                count_lgamma = torch.lgamma(counts + 1)
+                # The robust estimate sorts the entire count matrix. Keep that
+                # initialization off the GPU when the fit is memory bounded.
+                init_counts = counts.cpu() if batched else counts
+                theta_init = estimate_theta_robust_moments(
+                    init_counts, lower_bound, upper_bound
+                ).to(counts.device)
+                count_lgamma = None if batched else torch.lgamma(counts + 1)
             self._counts_cache = (counts, key, theta_init, count_lgamma)
         return self._counts_cache[2:]
 
@@ -62,7 +67,7 @@ class OutriderDispersion():
         self.theta = torch.clip(self.theta, lower, upper)
 
     def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01,
-            upper_bound=1000.0, device=None, fit_mean_scale=False):
+            upper_bound=1000.0, device=None, fit_mean_scale=False, batch_size=None):
         """
         x_true, x_pred: torch.Tensor, shape (samples, genes). ``x_pred`` is
         the full expected-count matrix, not a normalized mean.
@@ -76,20 +81,43 @@ class OutriderDispersion():
             raise ValueError("OUTRIDER theta fitting requires matching samples x genes matrices.")
         device = device or x_true.device
         dtype = x_pred.dtype
-        x_true = x_true.to(dtype=dtype, device=device)
-        x_pred = x_pred.to(dtype=dtype, device=device)
-        theta_init, count_lgamma = self._count_constants(x_true, lower_bound, upper_bound)
+        if batch_size is not None and batch_size < 1:
+            raise ValueError("batch_size must be a positive integer")
+        batched = batch_size is not None
+        # Chunk reduction changes summation order. Accumulate the optimizer's
+        # small parameter vectors in double precision so LBFGS line search is
+        # stable even when the input and stored dispersion use float32.
+        fit_dtype = torch.float64 if batched else dtype
+        if not batched:
+            x_true = x_true.to(dtype=dtype, device=device)
+            x_pred = x_pred.to(dtype=dtype, device=device)
+        theta_init, count_lgamma = self._count_constants(
+            x_true, lower_bound, upper_bound, batched=batched
+        )
+        theta_init = theta_init.to(dtype=fit_dtype, device=device)
         # Expected counts remain fixed during theta-only optimization. The PCA
         # mean-scale fit must recompute this term as its mean changes.
-        count_log_mu = None if fit_mean_scale else torch.xlogy(x_true, x_pred)
+        count_log_mu = None if fit_mean_scale or batched else torch.xlogy(x_true, x_pred)
         p_theta = nn.Parameter(torch.log(torch.clamp(theta_init - lower_bound, min=1e-8)))
         parameters = [p_theta]
 
         p_mean_scale = None
         if fit_mean_scale:
-            mean_scale_init = torch.mean(
-                x_true / torch.clamp(x_pred, min=torch.finfo(dtype).tiny), dim=0
-            ).clamp(min=lower_bound)
+            if batched:
+                with torch.no_grad():
+                    scale_sum = torch.zeros_like(theta_init)
+                    for start in range(0, len(x_true), batch_size):
+                        stop = min(start + batch_size, len(x_true))
+                        counts = x_true[start:stop].to(dtype=fit_dtype, device=device)
+                        expected = x_pred[start:stop].to(dtype=fit_dtype, device=device)
+                        scale_sum += (counts / torch.clamp(
+                            expected, min=torch.finfo(fit_dtype).tiny
+                        )).sum(dim=0)
+                    mean_scale_init = (scale_sum / len(x_true)).clamp(min=lower_bound)
+            else:
+                mean_scale_init = torch.mean(
+                    x_true / torch.clamp(x_pred, min=torch.finfo(dtype).tiny), dim=0
+                ).clamp(min=lower_bound)
             p_mean_scale = nn.Parameter(
                 torch.log(torch.clamp(mean_scale_init - lower_bound, min=1e-8))
             )
@@ -105,26 +133,44 @@ class OutriderDispersion():
 
         def closure():
             optimizer.zero_grad()
-            
-            theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).unsqueeze(0)
-            expected = x_pred
-            if p_mean_scale is not None:
-                expected = expected * (torch.exp(p_mean_scale) + lower_bound).unsqueeze(0)
-            if type(self.distribution) is NegativeBinomialDistribution:
-                loss = self.distribution.loss(
-                    x_true, theta, expected,
-                    count_lgamma=count_lgamma, count_log_mu=count_log_mu,
-                )
+
+            if batched:
+                total_loss = torch.zeros((), dtype=fit_dtype, device=device)
+                for start in range(0, len(x_true), batch_size):
+                    stop = min(start + batch_size, len(x_true))
+                    counts = x_true[start:stop].to(dtype=fit_dtype, device=device)
+                    expected = x_pred[start:stop].to(dtype=fit_dtype, device=device)
+                    theta = torch.clamp(
+                        torch.exp(p_theta) + lower_bound, max=upper_bound
+                    ).unsqueeze(0)
+                    if p_mean_scale is not None:
+                        expected = expected * (torch.exp(p_mean_scale) + lower_bound).unsqueeze(0)
+                    loss = self.distribution.loss(counts, theta, expected)
+                    loss.backward()
+                    total_loss += loss.detach()
+                return total_loss
             else:
-                loss = self.distribution.loss(x_true, theta, expected)
-            loss.backward()
-            return loss
+                theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).unsqueeze(0)
+                expected = x_pred
+                if p_mean_scale is not None:
+                    expected = expected * (torch.exp(p_mean_scale) + lower_bound).unsqueeze(0)
+                if type(self.distribution) is NegativeBinomialDistribution:
+                    loss = self.distribution.loss(
+                        x_true, theta, expected,
+                        count_lgamma=count_lgamma, count_log_mu=count_log_mu,
+                    )
+                else:
+                    loss = self.distribution.loss(x_true, theta, expected)
+                loss.backward()
+                return loss
 
         optimizer.step(closure)
 
-        self.theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).detach()
+        self.theta = torch.clamp(
+            torch.exp(p_theta) + lower_bound, max=upper_bound
+        ).detach().to(dtype=dtype)
         self.mean_scale = (
-            (torch.exp(p_mean_scale) + lower_bound).detach()
+            (torch.exp(p_mean_scale) + lower_bound).detach().to(dtype=dtype)
             if p_mean_scale is not None else None
         )
 

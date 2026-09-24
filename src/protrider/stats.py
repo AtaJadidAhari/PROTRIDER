@@ -46,8 +46,9 @@ def fit_residuals(dataset, df_out, model, config):
         df0 = None
         model.fit_dispersion(
             dataset.raw_x,
-            torch.as_tensor(expected, dtype=config.outrider_torch_dtype, device=dataset.X.device),
+            torch.as_tensor(expected, dtype=config.outrider_torch_dtype),
             fit_mean_scale=not config.autoencoder_training,
+            batch_size=config.batch_size,
         )
         mu, theta = model.get_dispersion_parameters()
         expected = expected * np.asarray(mu, dtype=dtype)[None, :]

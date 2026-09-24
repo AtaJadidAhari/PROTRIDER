@@ -38,7 +38,7 @@ n_epochs: 1 # number of training epochs
 
 # TODO: try with higher LR
 lr: 1e-4 # learning rate
-batch_size:
+batch_size: 512 # bounds both autoencoder and theta-fitting GPU batches
 
 find_q_method: "OHT" # OUTRIDER supports OHT or an integer value
 init_pca: True # PCA initialization
