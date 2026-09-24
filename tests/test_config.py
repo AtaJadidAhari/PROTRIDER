@@ -131,6 +131,22 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="outrider_precision"):
             ProtriderConfig(**base, outrider_precision="float16")
 
+    def test_outrider_pseudocount_default_and_override(self, tmp_path):
+        base = {
+            "input_intensities": "counts.tsv",
+            "analysis": "outrider",
+            "autoencoder_loss": "NLL",
+            "pval_dist": "nb",
+        }
+        config = ProtriderConfig(**base)
+        assert config.pseudocount == 1.0
+        config.save(tmp_path)
+        assert load_config(tmp_path / "config.yaml").pseudocount == 1.0
+
+        assert ProtriderConfig(**base, pseudocount=0.5).pseudocount == 0.5
+        with pytest.raises(ValueError, match="pseudocount must be finite and positive"):
+            ProtriderConfig(**base, pseudocount=0)
+
     def test_outrider_early_stopping_validation(self):
         base = {
             "out_dir": "output",

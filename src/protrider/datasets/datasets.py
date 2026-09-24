@@ -197,12 +197,14 @@ class OutriderDataset(Dataset, PCADataset):
                  input_format: str = "genes_as_rows",
                  fpkm_percentile: float = 0.95,
                  dtype: torch.dtype = torch.float32,
+                 pseudocount: float = 1.0,
                  **kwargs):
         super().__init__()
         self.device = device
         self.gtf = gtf
         self.dtype = dtype
         self.numpy_dtype = np.float32 if dtype == torch.float32 else np.float64
+        self.pseudocount = pseudocount
         # Unlike proteomics, zero is an observed RNA-seq count, not missing.
         raw = read(input_intensities, index_col, input_format)
         raw.index.name, raw.columns.name = "sampleID", "geneID"
@@ -247,7 +249,7 @@ class OutriderDataset(Dataset, PCADataset):
         self.normalized_log_counts = pd.DataFrame(
             np.asarray(
                 np.log(
-                    (self.raw_counts_filtered.to_numpy(dtype=self.numpy_dtype) + 1.0)
+                    (self.raw_counts_filtered.to_numpy(dtype=self.numpy_dtype) + self.pseudocount)
                     / self.size_factors_array
                 ),
                 dtype=self.numpy_dtype,
@@ -456,7 +458,9 @@ class OutriderDataset(Dataset, PCADataset):
 
     def find_enc_dim_optht(self):
         """Select q using R OUTRIDER's standardized counts, separate from PCA."""
-        self.oht_diagnostics = outrider_oht(self.raw_counts_filtered, self.oht_size_factors)
+        self.oht_diagnostics = outrider_oht(
+            self.raw_counts_filtered, self.oht_size_factors, self.pseudocount
+        )
         self.oht_threshold = self.oht_diagnostics["threshold"]
         if self.oht_diagnostics["raw_q"] == 0:
             logger.warning("No singular value passed OUTRIDER OHT; falling back to q=2.")

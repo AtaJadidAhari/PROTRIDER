@@ -47,15 +47,16 @@ An example dataset can be found in this repository under `samples/data/`.
 
 For `analysis: outrider`, supply integer RNA-seq counts and use `genes_as_rows`
 (genes × samples) or `genes_as_columns` (samples × genes). Zeros are valid
-counts. OUTRIDER uses `log((count + 1) / size_factor)` as input and the
+counts. OUTRIDER uses `log((count + pseudocount) / size_factor)` as input,
+with `pseudocount: 1.0` by default to match R OUTRIDER, and the
 negative-binomial expected count `size_factor * exp(decoder_output)` throughout
 training and scoring. FPKM filtering uses `fpkm_percentile: 0.95` by default,
 which retains genes above the cutoff in the upper 5% of samples.
 When autoencoder training is disabled, the PCA-only path additionally fits the per-gene mean multiplier used by the original OUTRIDER PCA correction.
 
-Set `outrider_precision` to `float32` (default) or `float64`. The selected precision is used for OUTRIDER autoencoder preprocessing, model parameters, dispersion fitting, inference, and statistical result arrays. The autoencoder uses the natural-log transform. OUTRIDER supports OHT or a fixed latent dimension, and currently rejects grid-search injection and cross-validation because those count-scale paths are not implemented consistently.
+Set `outrider_precision` to `float32` (default) or `float64`. The selected precision is used for OUTRIDER autoencoder preprocessing, model parameters, dispersion fitting, inference, and statistical result arrays. The autoencoder uses the natural-log transform. OUTRIDER supports OHT or a fixed latent dimension, and currently rejects grid-search injection and cross-validation because those count-scale paths are not implemented consistently. Its `pseudocount` also applies to OHT, z-scores, and reported fold changes; changing it from `1.0` changes the method and results. PROTRIDER and FRASER retain the `0.01` default.
 
-OHT follows [R OUTRIDER's `estimateBestQ`](https://github.com/gagneurlab/OUTRIDER/blob/b5dabe389fbcbead6de7d8c0287a194dcba8fe41/R/method-estimateBestQ.R): it normalizes counts by size factors, computes `log2((normalized_count + 1) / (gene_mean + 1))`, and standardizes each gene using its sample standard deviation before SVD. It includes the Marchenko–Pastur median correction in the threshold, permits `q = 1`, and falls back to `q = 2` only when no singular value exceeds the threshold. OHT uses double precision independently of training precision; its SVD is separate from the autoencoder's PCA initialization. As in R, genes with undefined standardized values (such as zero-variance genes) cause OHT to fail. A fixed `find_q_method` bypasses OHT.
+OHT follows [R OUTRIDER's `estimateBestQ`](https://github.com/gagneurlab/OUTRIDER/blob/b5dabe389fbcbead6de7d8c0287a194dcba8fe41/R/method-estimateBestQ.R): it normalizes counts by size factors, computes `log2((normalized_count + pseudocount) / (gene_mean + pseudocount))`, and standardizes each gene using its sample standard deviation before SVD. With the default `pseudocount: 1.0`, this matches R. It includes the Marchenko–Pastur median correction in the threshold, permits `q = 1`, and falls back to `q = 2` only when no singular value exceeds the threshold. OHT uses double precision independently of training precision; its SVD is separate from the autoencoder's PCA initialization. As in R, genes with undefined standardized values (such as zero-variance genes) cause OHT to fail. A fixed `find_q_method` bypasses OHT.
 
 Existing checkpoints retain their saved `q`. Use a fresh output directory without a checkpoint to rerun OHT selection. These OHT changes apply only to `analysis: outrider`; PROTRIDER and FRASER keep their existing selection methods.
 

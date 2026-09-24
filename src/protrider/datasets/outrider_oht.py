@@ -30,7 +30,7 @@ def _oht_coefficient(beta: float) -> float:
     return float(lambda_beta / np.sqrt(mp_median))
 
 
-def outrider_oht(counts, size_factors):
+def outrider_oht(counts, size_factors, pseudocount=1.0):
     """Return R-compatible OHT diagnostics for a samples-by-genes count matrix.
 
     R uses double precision and sample standard deviations (n - 1). Constant
@@ -50,7 +50,9 @@ def outrider_oht(counts, size_factors):
         raise ValueError("OUTRIDER OHT counts must be finite and non-negative.")
 
     controlled = counts / size_factors
-    log_controlled = np.log2((controlled + 1) / (controlled.mean(axis=0) + 1))
+    log_controlled = np.log2(
+        (controlled + pseudocount) / (controlled.mean(axis=0) + pseudocount)
+    )
     with np.errstate(divide="ignore", invalid="ignore"):
         z_scores = (log_controlled - log_controlled.mean(axis=0)) / log_controlled.std(axis=0, ddof=1)
     if not np.isfinite(z_scores).all():

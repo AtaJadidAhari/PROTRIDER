@@ -101,7 +101,7 @@ class ProtriderConfig:
     pval_adj: Literal["by", "bh", "holm"] = "by"
     pval_sided: Literal["two-sided", "left", "right"] = "two-sided"
     calculate_one_sided_pval: bool = False
-    pseudocount: float = 0.01
+    pseudocount: Optional[float] = None  # Defaults to 1 for OUTRIDER, 0.01 otherwise.
     
     # Reporting params
     outlier_threshold: float = 0.1
@@ -144,6 +144,10 @@ class ProtriderConfig:
         # Validation
         if self.analysis not in {"protrider", "outrider", "fraser"}:
             raise ValueError("analysis must be 'protrider', 'outrider', or 'fraser'")
+        if self.pseudocount is None:
+            self.pseudocount = 1.0 if self.analysis == "outrider" else 0.01
+        if not np.isfinite(self.pseudocount) or self.pseudocount <= 0:
+            raise ValueError("pseudocount must be finite and positive")
         if self.max_allowed_NAs_per_protein < 0 or self.max_allowed_NAs_per_protein > 1:
             raise ValueError("max_allowed_NAs_per_protein must be between 0 and 1")
         

@@ -4,6 +4,7 @@ import logging
 import os
 import resource
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional, Tuple, Union
@@ -122,6 +123,11 @@ def load_model(dataset: Union[ProtriderDataset, ProtriderSubset], checkpoint_pat
                 'outrider_precision', config.outrider_precision
             ) != config.outrider_precision:
                 raise ValueError("checkpoint OUTRIDER precision does not match the configuration")
+            saved_gene_means = checkpoint.get('gene_means')
+            if saved_gene_means is not None and not np.allclose(
+                saved_gene_means, dataset.gene_means.to_numpy()
+            ):
+                raise ValueError("checkpoint OUTRIDER model input does not match the configuration")
             saved_size_factors = checkpoint.get('size_factors')
             if saved_size_factors is not None and not np.allclose(
                 saved_size_factors,
@@ -793,6 +799,14 @@ def run(config: ProtriderConfig) -> Tuple[Result, ModelInfo]:
         ... )
         >>> result, model_info = run(config_cv)
     """
+    if config.analysis == "outrider" and config.pseudocount != 1.0:
+        warnings.warn(
+            f"OUTRIDER pseudocount is {config.pseudocount}; the original OUTRIDER "
+            "documentation uses 1.0. Results may differ from original OUTRIDER.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     if config.seed is not None:
         logger.info("Setting random seed: %s", config.seed)
         torch.manual_seed(config.seed)
@@ -974,7 +988,8 @@ def _run_protrider_standard(
                          how=config.pval_sided,
                          theta=theta,
                          dis=config.pval_dist,
-                         n_jobs=config.n_jobs)
+                         n_jobs=config.n_jobs,
+                         pseudocount=config.pseudocount)
     pvals_one_sided = None
     if config.calculate_one_sided_pval:
         pvals_one_sided, _ = get_pvals(x_true=x_true,
@@ -985,7 +1000,8 @@ def _run_protrider_standard(
                                     how='left',
                                     theta=theta,
                                     dis=config.pval_dist,
-                                    n_jobs=config.n_jobs)
+                                    n_jobs=config.n_jobs,
+                                    pseudocount=config.pseudocount)
     if config.analysis == "outrider":
         pvals = np.asarray(pvals, dtype=config.outrider_numpy_dtype)
         Z = np.asarray(Z, dtype=config.outrider_numpy_dtype)
@@ -1402,8 +1418,8 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     if expected_counts is not None:
         dtype = expected_counts.to_numpy().dtype
         counts = dataset.raw_counts_filtered.astype(dtype)
-        log2fc = (np.log2(counts + 1) - np.log2(expected_counts + 1)).astype(dtype)
-        fc = ((counts + 1) / (expected_counts + 1)).astype(dtype)
+        log2fc = (np.log2(counts + pseudocount) - np.log2(expected_counts + pseudocount)).astype(dtype)
+        fc = ((counts + pseudocount) / (expected_counts + pseudocount)).astype(dtype)
     elif base_fn is not None:
         log2fc = np.log2(base_fn(dataset.data) + pseudocount) - \
             np.log2(base_fn(df_out) + pseudocount)

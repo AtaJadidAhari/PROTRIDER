@@ -73,7 +73,8 @@ def fit_residuals(dataset, df_out, model, config):
     return mu, sigma, df0, df_res
 
 
-def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian', n_jobs=-1):
+def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian', n_jobs=-1,
+              pseudocount=1.0):
     hows = ('two-sided', 'left', 'right')
     if not how in hows:
         raise ValueError(f'Method should be in <{hows}>')
@@ -87,7 +88,7 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
         assert df0 is not None, "df0 should be provided for t-distribution"
         pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how, n_jobs=n_jobs)
     elif dis == 'nb':
-        z, _, _, _ = calc_effect(x_true, res, "zscores")
+        z, _, _, _ = calc_effect(x_true, res, "zscores", pseudocount=pseudocount)
         pvals = get_pv_nb(counts=x_true, res=res, mu=mu, theta=theta, how=how)
     elif dis == 'bb':
         pvals, z = get_pv_bb(K=x_true, N=res, mu=mu, rho=sigma, how=how) 
@@ -173,7 +174,7 @@ def _get_pv_norm(res, mu, sigma, how='two-sided'):
     return pvals, z
 
 
-def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
+def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta'], pseudocount=1.0):
     """
     Calculates effect sizes based on fitted expected values
 
@@ -200,8 +201,8 @@ def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
             f'Unknown effect_type: {e_type}')
 
     if "fold_change" in effect_type or "zscores" in effect_type:
-        outrider_fc = (counts + 1) / (res + 1) 
-        outrider_l2fc = np.log2(counts + 1) -  np.log2(res + 1)
+        outrider_fc = (counts + pseudocount) / (res + pseudocount)
+        outrider_l2fc = np.log2(counts + pseudocount) - np.log2(res + pseudocount)
 
     delta = counts - res
     if "delta" in effect_type:

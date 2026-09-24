@@ -8,6 +8,7 @@ and output saving options.
 import numpy as np
 import pandas as pd
 import tempfile
+import warnings
 from pathlib import Path
 import torch
 import pytest
@@ -22,6 +23,30 @@ from protrider.dispersions import OutriderDispersion
 
 class TestPipelineOUTRIDER:
     """Test class for standard (non-CV) pipeline execution."""
+
+    @pytest.mark.parametrize(
+        ("analysis", "pseudocount", "expected_warnings"),
+        [("outrider", 1.0, 0), ("outrider", 0.5, 1), ("protrider", 0.5, 0)],
+    )
+    def test_nonstandard_outrider_pseudocount_warns_at_run(
+        self, analysis, pseudocount, expected_warnings, tmp_path
+    ):
+        config = ProtriderConfig(
+            out_dir=str(tmp_path),
+            input_intensities="counts.tsv",
+            analysis=analysis,
+            autoencoder_loss="NLL" if analysis == "outrider" else "MSE",
+            pval_dist="nb" if analysis == "outrider" else "t",
+            pseudocount=pseudocount,
+        )
+        with patch("protrider.pipeline._run_protrider_standard", return_value=(None, None)):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", UserWarning)
+                run(config)
+        messages = [str(w.message) for w in caught if "original OUTRIDER documentation" in str(w.message)]
+        assert len(messages) == expected_warnings
+        if expected_warnings:
+            assert "uses 1.0" in messages[0]
 
     def test_run_with_file_paths(self, gene_expression_path, gene_annotation_path):
         """Test running OUTRIDER with file paths in config."""
@@ -61,6 +86,50 @@ class TestPipelineOUTRIDER:
             n_samples, n_proteins = result.df_res.shape
             assert result.df_pvals.shape == (n_samples, n_proteins)
             assert result.df_Z.shape == (n_samples, n_proteins)
+
+    def test_configured_pseudocount_controls_outrider_results(
+        self, gene_expression_path, gene_annotation_path, tmp_path, caplog
+    ):
+        config = ProtriderConfig(
+            out_dir=str(tmp_path),
+            analysis="outrider",
+            autoencoder_loss="NLL",
+            pval_dist="nb",
+            input_intensities=gene_expression_path,
+            gtf=gene_annotation_path,
+            index_col="geneID",
+            find_q_method="5",
+            n_epochs=1,
+            device="cpu",
+            pseudocount=0.5,
+        )
+        with pytest.warns(UserWarning, match="original OUTRIDER documentation uses 1.0"):
+            result, _ = run(config)
+        counts = result.dataset.raw_counts_filtered.to_numpy()
+        expected = result.df_expected_counts.to_numpy()
+        expected_log2fc = np.log2(counts + 0.5) - np.log2(expected + 0.5)
+        np.testing.assert_allclose(result.log2fc, expected_log2fc, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(result.fc, (counts + 0.5) / (expected + 0.5), rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(
+            result.dataset.normalized_log_counts,
+            np.log((counts + 0.5) / result.dataset.size_factors_array),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            result.df_Z,
+            (expected_log2fc - expected_log2fc.mean(axis=0))
+            / expected_log2fc.std(axis=0, ddof=1),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
+        config.pseudocount = 0.75
+        with caplog.at_level("WARNING"):
+            with pytest.warns(UserWarning, match="original OUTRIDER documentation uses 1.0"):
+                _, model_info = run(config)
+        assert "checkpoint OUTRIDER model input does not match" in caplog.text
+        assert model_info.epochs_run == 1
 
     @pytest.mark.parametrize("interval", [1, 10])
     def test_final_statistics_and_checkpoint_share_one_fit(
