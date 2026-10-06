@@ -63,7 +63,7 @@ class Dispersion:
             mu_scale = mu_scale.unsqueeze(1)
 
             # Calculate loss and backpropagate
-            mu = x_pred * mu_scale
+            mu = torch.clamp(x_pred * mu_scale, min=1e-8, max=1e6)
             loss = self.distribution.loss(x_true, theta, mu)
             loss.backward()
             return loss

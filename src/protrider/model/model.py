@@ -190,7 +190,7 @@ class ProtriderAutoencoder(nn.Module):
         out = self.decoder(self.latent_values, cond=cond)
 
         if self.model_type == "outrider":
-            out = torch.clip(out, -700, 700)
+            out = torch.clip(out, -700, 300)
 
         return out
 
@@ -423,7 +423,7 @@ class NegativeBinomialLoss(nn.Module):
         
         # Compute NB negative log-likelihood per gene
         eps = 1e-10
-        r = torch.clamp(theta, min=eps)
+        r = torch.clamp(theta, min=eps, max=1e6)
         mu = torch.clamp(x_pred, min=eps)
         
         term1 = gammaln(x_true + r) - gammaln(r) - gammaln(x_true + 1)
