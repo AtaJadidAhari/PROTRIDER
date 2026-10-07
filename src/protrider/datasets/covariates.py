@@ -11,13 +11,15 @@ logger = logging.getLogger(__name__)
 
 __all__ = ['parse_covariates']
 
-def parse_covariates(sa_file: Optional[str], cov_used: Optional[list], index_order: Optional[Sequence[str]] = None) -> tuple[np.ndarray, np.ndarray]:
+def parse_covariates(sa_file: Optional[str], cov_used: Optional[list], index_order: Optional[Sequence[str]] = None,
+                     dtype=None) -> tuple[np.ndarray, np.ndarray]:
     """Parse covariates from sample annotation file.
     
     Args:
         sa_file: Path to sample annotation file (CSV/TSV)
         cov_used: List of covariate column names to use
         index_order: Order of samples in intensity matrix (pd.Index)
+        dtype: Optional floating-point dtype for numerical preprocessing and output.
         
     Returns:
         tuple: (covariates, centered_covariates_noNA)
@@ -41,7 +43,7 @@ def parse_covariates(sa_file: Optional[str], cov_used: Optional[list], index_ord
     processed_covariates = _process_covariates(sample_anno[cov_used])
     
     # Combine all covariate types
-    covariates, centered_covariates = _combine_covariates(processed_covariates)
+    covariates, centered_covariates = _combine_covariates(processed_covariates, dtype=dtype)
     
     # Validate output
     assert np.isnan(covariates).sum() == 0, "Covariates contain NaN values"
@@ -153,14 +155,14 @@ def _process_covariates(cov_data):
     }
 
 
-def _combine_covariates(processed_covariates):
+def _combine_covariates(processed_covariates, dtype=None):
     """Combine processed covariates into final arrays."""
     covariate_arrays = []
     centered_covariate_arrays = []
     
     # Process numerical covariates
     if processed_covariates['numerical']:
-        numerical_data = pd.concat(processed_covariates['numerical'], axis=1).values
+        numerical_data = pd.concat(processed_covariates['numerical'], axis=1).to_numpy(dtype=dtype)
         # Center numerical data and handle NAs
         means = np.nanmean(numerical_data, axis=0, keepdims=True)
         centered_numerical = numerical_data - means
@@ -174,13 +176,13 @@ def _combine_covariates(processed_covariates):
     
     # Process categorical covariates (no centering needed)
     if processed_covariates['categorical']:
-        categorical_data = pd.concat(processed_covariates['categorical'], axis=1).values
+        categorical_data = pd.concat(processed_covariates['categorical'], axis=1).to_numpy(dtype=dtype)
         covariate_arrays.append(categorical_data)
         centered_covariate_arrays.append(categorical_data)
     
     # Process NA indicators (no centering needed)
     if processed_covariates['na_indicators']:
-        na_data = pd.concat(processed_covariates['na_indicators'], axis=1).values
+        na_data = pd.concat(processed_covariates['na_indicators'], axis=1).to_numpy(dtype=dtype)
         covariate_arrays.append(na_data)
         centered_covariate_arrays.append(na_data)
     

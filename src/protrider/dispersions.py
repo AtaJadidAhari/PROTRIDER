@@ -1,5 +1,6 @@
 import abc
 from typing import Optional
+import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -51,12 +52,9 @@ class OutriderDispersion():
 
     def get_parameters(self):
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
-        mean_scale = self.mean_scale
-        if mean_scale is None and self.theta is not None:
-            # A trained autoencoder supplies gene baselines through its decoder
-            # bias, so its effective post-fit scale is one.
-            mean_scale = torch.ones_like(self.theta)
-        mean_scale = None if mean_scale is None else mean_scale.detach().cpu().numpy()
+        mean_scale = None if self.mean_scale is None else self.mean_scale.detach().cpu().numpy()
+        if mean_scale is None and theta is not None:
+            mean_scale = np.ones_like(theta)
         return mean_scale, theta
     
     def set_dispersion(self, theta, mean_scale=None):
@@ -84,17 +82,13 @@ class OutriderDispersion():
         if batch_size is not None and batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
         batched = batch_size is not None
-        # Chunk reduction changes summation order. Accumulate the optimizer's
-        # small parameter vectors in double precision so LBFGS line search is
-        # stable even when the input and stored dispersion use float32.
-        fit_dtype = torch.float64 if batched else dtype
         if not batched:
             x_true = x_true.to(dtype=dtype, device=device)
-            x_pred = x_pred.to(dtype=dtype, device=device)
+            x_pred = x_pred.to(device)
         theta_init, count_lgamma = self._count_constants(
             x_true, lower_bound, upper_bound, batched=batched
         )
-        theta_init = theta_init.to(dtype=fit_dtype, device=device)
+        theta_init = theta_init.to(dtype=dtype, device=device)
         # Expected counts remain fixed during theta-only optimization. The PCA
         # mean-scale fit must recompute this term as its mean changes.
         count_log_mu = None if fit_mean_scale or batched else torch.xlogy(x_true, x_pred)
@@ -108,10 +102,10 @@ class OutriderDispersion():
                     scale_sum = torch.zeros_like(theta_init)
                     for start in range(0, len(x_true), batch_size):
                         stop = min(start + batch_size, len(x_true))
-                        counts = x_true[start:stop].to(dtype=fit_dtype, device=device)
-                        expected = x_pred[start:stop].to(dtype=fit_dtype, device=device)
+                        counts = x_true[start:stop].to(dtype=dtype, device=device)
+                        expected = x_pred[start:stop].to(device)
                         scale_sum += (counts / torch.clamp(
-                            expected, min=torch.finfo(fit_dtype).tiny
+                            expected, min=torch.finfo(dtype).tiny
                         )).sum(dim=0)
                     mean_scale_init = (scale_sum / len(x_true)).clamp(min=lower_bound)
             else:
@@ -135,11 +129,11 @@ class OutriderDispersion():
             optimizer.zero_grad()
 
             if batched:
-                total_loss = torch.zeros((), dtype=fit_dtype, device=device)
+                total_loss = torch.zeros((), dtype=dtype, device=device)
                 for start in range(0, len(x_true), batch_size):
                     stop = min(start + batch_size, len(x_true))
-                    counts = x_true[start:stop].to(dtype=fit_dtype, device=device)
-                    expected = x_pred[start:stop].to(dtype=fit_dtype, device=device)
+                    counts = x_true[start:stop].to(dtype=dtype, device=device)
+                    expected = x_pred[start:stop].to(device)
                     theta = torch.clamp(
                         torch.exp(p_theta) + lower_bound, max=upper_bound
                     ).unsqueeze(0)
@@ -168,9 +162,9 @@ class OutriderDispersion():
 
         self.theta = torch.clamp(
             torch.exp(p_theta) + lower_bound, max=upper_bound
-        ).detach().to(dtype=dtype)
+        ).detach()
         self.mean_scale = (
-            (torch.exp(p_mean_scale) + lower_bound).detach().to(dtype=dtype)
+            (torch.exp(p_mean_scale) + lower_bound).detach()
             if p_mean_scale is not None else None
         )
 

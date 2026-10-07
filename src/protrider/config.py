@@ -194,6 +194,10 @@ class ProtriderConfig:
                 raise ValueError("OUTRIDER uses the natural-log count transformation; set log_func_name='log'.")
             if self.outrider_precision not in {"float32", "float64"}:
                 raise ValueError("outrider_precision must be 'float32' or 'float64'.")
+            self.outrider_torch_dtype, self.outrider_numpy_dtype = {
+                "float32": (torch.float32, np.float32),
+                "float64": (torch.float64, np.float64),
+            }[self.outrider_precision]
             if type(self.outrider_theta_fit_interval) is not int or self.outrider_theta_fit_interval < 1:
                 raise ValueError("outrider_theta_fit_interval must be a positive integer.")
             if self.outrider_early_stopping_patience < 1:
@@ -237,12 +241,6 @@ class ProtriderConfig:
         
         # Set PyTorch device
         self.device_torch = torch.device("cuda" if (torch.cuda.is_available() and self.device == 'gpu') else "cpu")
-        self.outrider_torch_dtype = (
-            torch.float32 if self.outrider_precision == "float32" else torch.float64
-        )
-        self.outrider_numpy_dtype = (
-            np.float32 if self.outrider_precision == "float32" else np.float64
-        )
     
     def save(self, out_dir: Union[str, Path]) -> None:
         """

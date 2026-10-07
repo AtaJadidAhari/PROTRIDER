@@ -17,7 +17,7 @@ from .config import ProtriderConfig
 from .datasets import (OmicDataset, ProtriderDataset,
                        ProtriderKfoldCVGenerator, ProtriderLOOCVGenerator,
                        ProtriderSubset)
-from .model import (_forward_outrider_in_batches, ModelInfo, MSEBCELoss,
+from .model import (_outrider_nll, ModelInfo, MSEBCELoss,
                     OmicAutoencoder, find_latent_dim, init_model,
                     outrider_expected_counts, train, train_val)
 from .plots import plot_cv_loss
@@ -863,7 +863,8 @@ def _run_protrider_standard(
                             gtf=config.gtf,
                             device=config.device_torch,
                             input_format=config.input_format,
-                            dtype=config.outrider_torch_dtype)
+                            dtype=config.outrider_torch_dtype,
+                            numpy_dtype=config.outrider_numpy_dtype)
 
     # 1.5 Determine checkpoint path and try to load existing model
     model = None
@@ -962,39 +963,19 @@ def _run_protrider_standard(
     if config.analysis == "outrider":
         # fit_residuals performs the authoritative final dispersion fit. Keep
         # every downstream calculation on that same fitted parameter tuple.
-        theta = np.asarray(sigma, dtype=config.outrider_numpy_dtype)
-        mu = np.asarray(mu, dtype=config.outrider_numpy_dtype)
-        expected_tensor = torch.as_tensor(
-            df_res.to_numpy(dtype=config.outrider_numpy_dtype),
-            dtype=config.outrider_torch_dtype,
+        final_loss = _outrider_nll(
+            torch.as_tensor(df_res.to_numpy()), model.dispersion.theta,
+            dataset.raw_x, dataset.torch_mask, criterion, config.batch_size,
         )
-        theta_tensor = torch.as_tensor(
-            theta, dtype=config.outrider_torch_dtype, device=dataset.X.device
-        )
-        if config.batch_size is None:
-            final_loss, final_reconstruction_loss, final_bce_loss = criterion(
-                (theta_tensor, expected_tensor.to(dataset.X.device)),
-                dataset.raw_x, dataset.torch_mask, detached=True
-            )
-            final_loss = float(final_loss)
-        else:
-            weighted_loss = 0.0
-            observations = 0
-            with torch.no_grad():
-                for start in range(0, len(dataset.raw_x), config.batch_size):
-                    stop = min(start + config.batch_size, len(dataset.raw_x))
-                    chunk_loss, _, _ = criterion(
-                        (theta_tensor, expected_tensor[start:stop].to(dataset.X.device)),
-                        dataset.raw_x[start:stop], dataset.torch_mask[start:stop],
-                    )
-                    count = int((~dataset.torch_mask[start:stop]).sum())
-                    weighted_loss += float(chunk_loss) * count
-                    observations += count
-            final_loss = weighted_loss / observations
         logger.info("Final consistent OUTRIDER NLL: %.6f", final_loss)
     latent_values = model.get_latent_values()
     timer.step('Fitting residuals')
     x_true = dataset.K.T.values if config.analysis == "fraser" else dataset.raw_filtered.values
+    if config.analysis == "outrider":
+        # Preserve the fitted values; promote only at the p-value boundary.
+        df_res = df_res.astype(np.float64)
+        theta = np.asarray(sigma, dtype=np.float64)
+        mu = np.asarray(mu, dtype=np.float64)
     pvals, Z = get_pvals(x_true=x_true,
                          res=df_res.values,
                          mu=mu,
@@ -1017,13 +998,6 @@ def _run_protrider_standard(
                                     dis=config.pval_dist,
                                     n_jobs=config.n_jobs,
                                     pseudocount=config.pseudocount)
-    if config.analysis == "outrider":
-        pvals = np.asarray(pvals, dtype=config.outrider_numpy_dtype)
-        Z = np.asarray(Z, dtype=config.outrider_numpy_dtype)
-        if pvals_one_sided is not None:
-            pvals_one_sided = np.asarray(
-                pvals_one_sided, dtype=config.outrider_numpy_dtype
-            )
     timer.step('Computing p-values')
     group_ids = dataset.intron_ranges["gene_id"] if config.analysis == "fraser" else None
     pvals_adj, gene_level_info = adjust_pvals(pvals, method=config.pval_adj, group_ids=group_ids,
@@ -1031,8 +1005,6 @@ def _run_protrider_standard(
                                               index=dataset.data.columns if config.analysis == "fraser" else dataset.data.index,
                                               columns=dataset.data.index if config.analysis == "fraser" else dataset.data.columns,
                                               transpose=config.analysis == "fraser")
-    if config.analysis == "outrider":
-        pvals_adj = np.asarray(pvals_adj, dtype=config.outrider_numpy_dtype)
     timer.step('Adjusting p-values')
     #  df_res for Fraser from here on is the actual delta psi
     if config.analysis == "fraser":
@@ -1042,9 +1014,7 @@ def _run_protrider_standard(
         # public residual field now has its literal observed-minus-expected
         # meaning; df_expected_counts retains the scoring matrix explicitly.
         df_expected_counts = df_res.copy()
-        df_res = (dataset.raw_counts_filtered - df_expected_counts).astype(
-            config.outrider_numpy_dtype
-        )
+        df_res = dataset.raw_counts_filtered - df_expected_counts
     else:
         df_expected_counts = None
 
@@ -1304,7 +1274,38 @@ def _run_protrider_cv(
     return result, model_info
 
 
+def _inference_outrider(dataset, model, criterion, batch_size):
+    model.eval()
+    batch_size = batch_size or len(dataset.X)
+    outputs, latent_values = [], []
+    with torch.no_grad():
+        loss_sum = dataset.X.new_zeros(())
+        observations = torch.zeros((), dtype=torch.long, device=dataset.X.device)
+        for start in range(0, len(dataset.X), batch_size):
+            stop = min(start + batch_size, len(dataset.X))
+            output = model(
+                dataset.X[start:stop], dataset.torch_mask[start:stop],
+                cond=dataset.covariates[start:stop],
+            )
+            loss, _, _ = criterion(
+                (model.dispersion.theta, outrider_expected_counts(output, dataset.size_factors[start:stop])),
+                dataset.raw_x[start:stop], dataset.torch_mask[start:stop],
+            )
+            count = (~dataset.torch_mask[start:stop]).sum()
+            loss_sum += loss * count
+            observations += count
+            outputs.append(output.cpu())
+            latent_values.append(model.get_latent_values().cpu())
+        loss = (loss_sum / observations).item()
+    model.latent_values = torch.cat(latent_values)
+    df_out = pd.DataFrame(torch.cat(outputs).numpy(), index=dataset.data.index, columns=dataset.data.columns)
+    theta = model.dispersion.theta.detach().cpu().numpy()
+    return df_out, theta, None, loss, loss, None
+
+
 def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAutoencoder, criterion: MSEBCELoss, batch_size=None, use_cpu=True):
+    if model.model_type == "outrider":
+        return _inference_outrider(dataset, model, criterion, batch_size)
     
     # Save original device
     orig_device = next(model.parameters()).device
@@ -1345,17 +1346,6 @@ def _inference(dataset: Union[ProtriderDataset, ProtriderSubset], model: OmicAut
             )
             theta = None
 
-        elif model.model_type == "outrider":
-            X_out = _forward_outrider_in_batches(
-                model, X, mask, cov, batch_size=batch_size
-            )
-
-            _, theta = model.get_dispersion_parameters()
-            loss, reconstruction_loss, bce_loss = criterion(
-                (theta, outrider_expected_counts(X_out, dataset.size_factors.to(device))),
-                raw_x,
-                detached=True
-            )
         elif model.model_type == "fraser":
             X_out = model(X, mask, cond=cov)
             _, rho = model.get_dispersion_parameters()
@@ -1433,8 +1423,8 @@ def _format_results(df_out, df_res, df_presence, pvals, Z, pvals_one_sided, pval
     if expected_counts is not None:
         dtype = expected_counts.to_numpy().dtype
         counts = dataset.raw_counts_filtered.astype(dtype)
-        log2fc = (np.log2(counts + pseudocount) - np.log2(expected_counts + pseudocount)).astype(dtype)
-        fc = ((counts + pseudocount) / (expected_counts + pseudocount)).astype(dtype)
+        log2fc = np.log2(counts + pseudocount) - np.log2(expected_counts + pseudocount)
+        fc = (counts + pseudocount) / (expected_counts + pseudocount)
     elif base_fn is not None:
         log2fc = np.log2(base_fn(dataset.data) + pseudocount) - \
             np.log2(base_fn(df_out) + pseudocount)

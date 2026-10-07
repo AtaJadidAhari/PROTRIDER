@@ -12,15 +12,14 @@ __all__ = ["fit_residuals", "get_pvals", "adjust_pvals", "get_pvals_per_gene"]
 logger = logging.getLogger(__name__)
 
 
-def _outrider_expected_counts(df_out, size_factors, dtype):
-    """Construct finite OUTRIDER expected counts with the configured precision."""
-    logits = np.asarray(df_out, dtype=dtype)
-    factors = np.asarray(size_factors, dtype=dtype)
-    finfo = np.finfo(dtype)
-    max_factor = max(float(np.max(factors)), 1.0)
+def _outrider_expected_counts(df_out, size_factors):
+    """Construct finite expected counts in the model output's precision."""
+    logits = df_out.to_numpy()
+    finfo = np.finfo(logits.dtype)
+    max_factor = np.maximum(np.max(size_factors), 1.0)
     max_log = np.log(finfo.max) - np.log(max_factor) - 2.0
     min_log = np.log(finfo.tiny)
-    return np.exp(np.clip(logits, min_log, max_log)).astype(dtype, copy=False) * factors
+    return np.exp(np.clip(logits, min_log, max_log)) * size_factors
 
 def fit_residuals(dataset, df_out, model, config):
     if config.analysis == 'protrider':
@@ -38,23 +37,20 @@ def fit_residuals(dataset, df_out, model, config):
             raise ValueError(f"Unknown distribution: {dis}")
         
     elif config.analysis == "outrider":
-        dtype = config.outrider_numpy_dtype
         expected = _outrider_expected_counts(
-            df_out, dataset.size_factors.detach().cpu().numpy(), dtype
+            df_out, dataset.size_factors_array
         )
-        sigma = None
         df0 = None
         model.fit_dispersion(
             dataset.raw_x,
-            torch.as_tensor(expected, dtype=config.outrider_torch_dtype),
+            torch.as_tensor(expected),
             fit_mean_scale=not config.autoencoder_training,
             batch_size=config.batch_size,
         )
-        mu, theta = model.get_dispersion_parameters()
-        expected = expected * np.asarray(mu, dtype=dtype)[None, :]
-        sigma = theta
+        mu, sigma = model.get_dispersion_parameters()
+        expected *= mu[None, :]
         df_res = pd.DataFrame(
-            np.asarray(expected, dtype=dtype),
+            expected,
             index=dataset.data.index,
             columns=dataset.data.columns,
         )

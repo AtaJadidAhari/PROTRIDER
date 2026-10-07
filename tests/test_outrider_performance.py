@@ -94,19 +94,30 @@ def test_chunked_theta_fit_matches_full_cohort(device, dtype, fit_mean_scale):
     expected = counts.cpu() * 0.7 + 2
     full = OutriderDispersion()
     chunked = OutriderDispersion()
-    # Use a double-precision full-cohort reference: float32 LBFGS can stop at
-    # different points when the likelihood's reduction order changes.
-    full.fit(counts.double(), expected.to(device).double(), max_iter=20,
+    full.fit(counts, expected.to(device), max_iter=20,
              fit_mean_scale=fit_mean_scale)
     with patch.object(chunked.distribution, "loss", wraps=chunked.distribution.loss) as loss:
         chunked.fit(counts, expected, max_iter=20, fit_mean_scale=fit_mean_scale,
                     batch_size=2)
     assert loss.call_count > 1
     assert all(call.args[0].shape[0] <= 2 for call in loss.call_args_list)
-    torch.testing.assert_close(chunked.theta.double(), full.theta, rtol=2e-4, atol=2e-4)
-    if fit_mean_scale:
-        torch.testing.assert_close(chunked.mean_scale.double(), full.mean_scale,
-                                   rtol=2e-4, atol=2e-4)
+    assert all(all(arg.dtype == dtype for arg in call.args) for call in loss.call_args_list)
+    assert chunked.theta.dtype == dtype
+    if dtype == torch.float64:
+        torch.testing.assert_close(chunked.theta, full.theta, rtol=2e-4, atol=2e-4)
+        if fit_mean_scale:
+            torch.testing.assert_close(chunked.mean_scale, full.mean_scale, rtol=2e-4, atol=2e-4)
+    else:
+        # Float32 LBFGS may stop at different parameters when chunking changes
+        # reduction order. Compare the fitted likelihood in double precision.
+        def objective(fit):
+            mean = expected.to(device).double()
+            if fit_mean_scale:
+                assert fit.mean_scale.dtype == dtype
+                mean = mean * fit.mean_scale.double()[None, :]
+            return NegativeBinomialDistribution().loss(counts.double(), fit.theta.double(), mean)
+
+        torch.testing.assert_close(objective(chunked), objective(full), rtol=1e-3, atol=2e-4)
     assert chunked._counts_cache[3] is None  # no retained full-size likelihood matrix
 
 

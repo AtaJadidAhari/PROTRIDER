@@ -481,6 +481,24 @@ def train(
     return running_loss, running_reconstruction_loss, running_bce_loss, train_losses
 
 
+def _outrider_nll(expected, theta, raw_x, mask, criterion, batch_size=None):
+    """Evaluate a full-cohort NLL while transferring expected counts by batch."""
+    batch_size = batch_size or len(raw_x)
+    with torch.no_grad():
+        loss_sum = raw_x.new_zeros(())
+        observations = torch.zeros((), dtype=torch.long, device=raw_x.device)
+        for start in range(0, len(raw_x), batch_size):
+            stop = min(start + batch_size, len(raw_x))
+            loss, _, _ = criterion(
+                (theta, expected[start:stop].to(raw_x.device)),
+                raw_x[start:stop], mask[start:stop],
+            )
+            count = (~mask[start:stop]).sum()
+            loss_sum += loss * count
+            observations += count
+        return (loss_sum / observations).item()
+
+
 def _fit_and_evaluate_outrider(dataset, model, criterion, batch_size=None, refit_theta=True):
     """Evaluate the complete cohort, optionally refitting theta first."""
     with torch.no_grad():
@@ -509,29 +527,10 @@ def _fit_and_evaluate_outrider(dataset, model, criterion, batch_size=None, refit
     if refit_theta:
         model.fit_dispersion(dataset.raw_x, expected, batch_size=batch_size)
         model.dispersion.clip_theta()
-    theta = model.dispersion.theta
-    if batch_size is None:
-        loss, reconstruction_loss, bce_loss = criterion(
-            (theta, expected), dataset.raw_x, dataset.torch_mask
-        )
-    else:
-        with torch.no_grad():
-            total_loss = 0.0
-            total_observations = 0
-            for start in range(0, len(dataset.X), batch_size):
-                stop = min(start + batch_size, len(dataset.X))
-                chunk_loss, _, _ = criterion(
-                    (theta, expected[start:stop].to(dataset.raw_x.device)),
-                    dataset.raw_x[start:stop], dataset.torch_mask[start:stop],
-                )
-                observations = int((~dataset.torch_mask[start:stop]).sum())
-                total_loss += float(chunk_loss) * observations
-                total_observations += observations
-            loss = total_loss / total_observations
-            bce_loss = None
-    # Without presence/absence modelling, the OUTRIDER loss is its NLL.
-    loss_value = float(loss.detach().cpu()) if isinstance(loss, torch.Tensor) else loss
-    return loss_value, loss_value, bce_loss
+    loss = _outrider_nll(
+        expected, model.dispersion.theta, dataset.raw_x, dataset.torch_mask, criterion, batch_size
+    )
+    return loss, loss, None
 
 
 def _train_iteration(data_loader, model, criterion, optimizer, collect_losses=True):

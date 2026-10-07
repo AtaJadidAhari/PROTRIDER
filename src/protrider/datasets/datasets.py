@@ -198,25 +198,26 @@ class OutriderDataset(Dataset, PCADataset):
                  fpkm_percentile: float = 0.95,
                  dtype: torch.dtype = torch.float32,
                  pseudocount: float = 1.0,
+                 *, numpy_dtype: type = np.float32,
                  **kwargs):
         super().__init__()
         self.device = device
         self.gtf = gtf
         self.dtype = dtype
-        self.numpy_dtype = np.float32 if dtype == torch.float32 else np.float64
+        self.numpy_dtype = numpy_dtype
         self.pseudocount = pseudocount
         # Unlike proteomics, zero is an observed RNA-seq count, not missing.
         raw = read(input_intensities, index_col, input_format)
         raw.index.name, raw.columns.name = "sampleID", "geneID"
-        values = raw.to_numpy(dtype=np.float64)
+        values = raw.to_numpy()
         if not np.isfinite(values).all():
             raise ValueError("OUTRIDER counts must be finite; missing counts are not supported.")
-        if (values < 0).any() or not np.equal(values, np.floor(values)).all():
+        if (values < 0).any() or (values % 1 != 0).any():
             raise ValueError("OUTRIDER counts must be non-negative integers.")
         self.raw_counts_unfiltered = raw.astype(np.int64)
         self.raw_data = self.raw_counts_unfiltered  # Alias retained for existing callers.
-        _, size_factors = deseq2_norm(self.raw_counts_unfiltered)
-        self.size_factors_array = np.asarray(size_factors, dtype=self.numpy_dtype).reshape(-1, 1)
+        _, size_factors = deseq2_norm(self.raw_counts_unfiltered.to_numpy(dtype=self.numpy_dtype))
+        self.size_factors_array = size_factors.reshape(-1, 1)
         if not np.isfinite(self.size_factors_array).all() or (self.size_factors_array <= 0).any():
             raise ValueError("OUTRIDER size factors must be finite and positive.")
 
@@ -238,43 +239,39 @@ class OutriderDataset(Dataset, PCADataset):
 
         # Match the fitted model to the retained gene set. The provisional
         # factors above are used only to calculate the expression filter.
-        _, size_factors = deseq2_norm(self.raw_counts_filtered)
-        # R selects q in double precision, independently of training precision.
-        self.oht_size_factors = np.asarray(size_factors, dtype=np.float64).reshape(-1, 1)
-        self.size_factors_array = np.asarray(size_factors, dtype=self.numpy_dtype).reshape(-1, 1)
+        counts = self.raw_counts_filtered.to_numpy(dtype=self.numpy_dtype)
+        _, size_factors = deseq2_norm(counts)
+        self.size_factors_array = size_factors.reshape(-1, 1)
+        self.oht_size_factors = self.size_factors_array
         if not np.isfinite(self.size_factors_array).all() or (self.size_factors_array <= 0).any():
             raise ValueError("OUTRIDER size factors must be finite and positive after gene filtering.")
 
         # Transform raw counts to log-normalized values, then centre each gene.
         self.normalized_log_counts = pd.DataFrame(
-            np.asarray(
-                np.log(
-                    (self.raw_counts_filtered.to_numpy(dtype=self.numpy_dtype) + self.pseudocount)
-                    / self.size_factors_array
-                ),
-                dtype=self.numpy_dtype,
+            np.log(
+                (counts + self.pseudocount) / self.size_factors_array
             ),
             index=raw.index, columns=self.raw_counts_filtered.columns,
         )
-        self.gene_means = self.normalized_log_counts.mean(axis=0).astype(self.numpy_dtype)
+        self.gene_means = self.normalized_log_counts.mean(axis=0)
         self.data = self.normalized_log_counts
         self.omic_means = self.gene_means.to_numpy()[None, :]
         self.centered_input = self.normalized_log_counts.subtract(self.gene_means, axis=1)
-        self.centered_log_data_noNA = self.centered_input.to_numpy(dtype=self.numpy_dtype)
+        self.centered_log_data_noNA = self.centered_input.to_numpy()
         self.mask = np.zeros_like(self.centered_log_data_noNA, dtype=bool)
-        self.X = torch.as_tensor(self.centered_log_data_noNA, dtype=dtype)
-        self.raw_x = torch.as_tensor(
-            self.raw_counts_filtered.to_numpy(dtype=self.numpy_dtype), dtype=dtype
-        )
+        self.X = torch.as_tensor(self.centered_log_data_noNA)
+        self.raw_x = torch.as_tensor(counts)
         self.torch_mask = torch.tensor(self.mask)
-        self.omic_means_torch = torch.as_tensor(self.omic_means.squeeze(0), dtype=dtype)
+        self.omic_means_torch = torch.as_tensor(self.omic_means.squeeze(0))
 
         # Read and preprocess covariates
         if sa_file is not None and cov_used is not None:
             try:
-                raw_covariates, centered_covariates = parse_covariates(sa_file, cov_used, self.data.index)
-                self.raw_covariates = torch.from_numpy(raw_covariates).to(dtype=dtype)
-                self.centered_covariates_noNA = torch.from_numpy(centered_covariates).to(dtype=dtype)
+                raw_covariates, centered_covariates = parse_covariates(
+                    sa_file, cov_used, self.data.index, dtype=self.numpy_dtype
+                )
+                self.raw_covariates = torch.from_numpy(raw_covariates)
+                self.centered_covariates_noNA = torch.from_numpy(centered_covariates)
                 # Conditional model inputs use centered numerical covariates.
                 self.covariates = self.centered_covariates_noNA
             except ValueError as e:
@@ -296,7 +293,7 @@ class OutriderDataset(Dataset, PCADataset):
         self.raw_covariates = self.raw_covariates.to(device)
         self.omic_means_torch = self.omic_means_torch.to(device)
         self.raw_x = self.raw_x.to(device)
-        self.size_factors = torch.as_tensor(self.size_factors_array, dtype=dtype, device=device)
+        self.size_factors = torch.as_tensor(self.size_factors_array, device=device)
         # self.presence = (~self.torch_mask).long()
 
     def __len__(self):
@@ -336,7 +333,8 @@ class OutriderDataset(Dataset, PCADataset):
         """
         if not isinstance(fpkm_matrix, pd.DataFrame):
             raise TypeError("FPKM filtering requires a labelled samples x genes DataFrame.")
-        passed_filter = fpkm_matrix.quantile(percentile, axis=0) > fpkm_cutoff
+        quantiles = np.quantile(fpkm_matrix.to_numpy(), self.numpy_dtype(percentile), axis=0)
+        passed_filter = pd.Series(quantiles > fpkm_cutoff, index=fpkm_matrix.columns)
         logger.info("%s genes out of %s are filtered out. New shape: (%s, %s)",
                     len(passed_filter) - passed_filter.sum(), len(passed_filter),
                     fpkm_matrix.shape[0], passed_filter.sum())
@@ -434,7 +432,6 @@ class OutriderDataset(Dataset, PCADataset):
         """
 
         lengths = lengths_df.set_index("gene_id")["exonic_length"]
-        expr_df = expr_df.copy()
 
         missing = expr_df.index.difference(lengths.index)
         if len(missing):
@@ -442,24 +439,27 @@ class OutriderDataset(Dataset, PCADataset):
                            len(missing), ", ".join(map(str, missing[:10])))
         # Preserve every count gene and let absent lengths yield FPKM=0.  Never
         # shorten a labelled mask and then apply it positionally.
-        lengths = lengths.reindex(expr_df.index)
-
-        if robust is False:
-            library_size = expr_df.sum(axis=0)
-        else:
-            library_size = pd.Series(
-                self.size_factors_array.ravel() * np.exp(np.mean(np.log(expr_df.sum(axis=0).clip(lower=1)))),
-                index=expr_df.columns,
-            )
-
-        fpkm = expr_df.div(lengths.replace(0, np.nan), axis=0) * 1e9
-        fpkm = fpkm.div(library_size, axis=1)
-        return fpkm.fillna(0.0).astype(self.numpy_dtype)
+        lengths = lengths.reindex(expr_df.index).to_numpy(dtype=self.numpy_dtype)
+        counts = expr_df.to_numpy(dtype=self.numpy_dtype)
+        totals = counts.sum(axis=0)
+        library_size = (
+            self.size_factors_array.ravel() * np.exp(np.log(totals.clip(min=1)).mean())
+            if robust else totals
+        )
+        fpkm = np.zeros_like(counts)
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            np.divide(counts, lengths[:, None], out=fpkm,
+                      where=(np.isfinite(lengths) & (lengths != 0))[:, None])
+            fpkm *= 1e9
+            fpkm /= library_size[None, :]
+        fpkm[np.isnan(fpkm)] = 0
+        return pd.DataFrame(fpkm, index=expr_df.index, columns=expr_df.columns)
 
     def find_enc_dim_optht(self):
         """Select q using R OUTRIDER's standardized counts, separate from PCA."""
         self.oht_diagnostics = outrider_oht(
-            self.raw_counts_filtered, self.oht_size_factors, self.pseudocount
+            self.raw_counts_filtered, self.oht_size_factors, self.pseudocount,
+            dtype=self.numpy_dtype,
         )
         self.oht_threshold = self.oht_diagnostics["threshold"]
         if self.oht_diagnostics["raw_q"] == 0:

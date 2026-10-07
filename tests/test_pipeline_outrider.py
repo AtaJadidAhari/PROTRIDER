@@ -132,8 +132,9 @@ class TestPipelineOUTRIDER:
         assert model_info.epochs_run == 1
 
     @pytest.mark.parametrize("interval", [1, 10])
+    @pytest.mark.parametrize("precision", ["float32", "float64"])
     def test_final_statistics_and_checkpoint_share_one_fit(
-        self, gene_expression_path, gene_annotation_path, tmp_path, interval
+        self, gene_expression_path, gene_annotation_path, tmp_path, interval, precision
     ):
         """The checkpoint and every reported statistic use the final theta fit."""
         config = ProtriderConfig(
@@ -147,7 +148,7 @@ class TestPipelineOUTRIDER:
             find_q_method="5",
             n_epochs=1,
             batch_size=3,
-            outrider_precision="float64",
+            outrider_precision=precision,
             outrider_theta_fit_interval=interval,
             device="cpu",
         )
@@ -156,8 +157,16 @@ class TestPipelineOUTRIDER:
                           side_effect=OutriderDispersion.fit) as fit:
             result, model_info = run(config)
         assert fit.call_count == (1 // interval) + 2
+        assert all(call.args[2].dtype == config.outrider_torch_dtype for call in fit.call_args_list)
         checkpoint = torch.load(tmp_path / "model.pt", weights_only=False)
         theta = result.dispersions["theta"].to_numpy()
+        assert checkpoint["theta"].dtype == config.outrider_numpy_dtype
+        assert checkpoint["mean_scale"].dtype == config.outrider_numpy_dtype
+        assert result.df_out.to_numpy().dtype == config.outrider_numpy_dtype
+        for frame in (result.df_expected_counts, result.dispersions, result.mu,
+                      result.df_pvals, result.df_pvals_adj, result.df_Z,
+                      result.df_res, result.fc, result.log2fc):
+            assert frame.to_numpy().dtype == np.float64
 
         np.testing.assert_allclose(checkpoint["theta"], theta)
         np.testing.assert_allclose(
@@ -177,7 +186,7 @@ class TestPipelineOUTRIDER:
         np.testing.assert_allclose(
             model_info.final_consistent_nll,
             -log_prob.mean(),
-            rtol=1e-6,
+            rtol=1e-4 if precision == "float32" else 1e-6,
         )
 
         reloaded_result, _ = run(config)
