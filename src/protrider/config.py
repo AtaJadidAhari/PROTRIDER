@@ -44,6 +44,12 @@ class ProtriderConfig:
     fpkmCutoff: Optional[float] = 1
     fpkm_percentile: float = 0.95
     gtf: Optional[str] = "samples/data/gencode_annotation_trunc.gtf"
+    outrider_precision: Literal["float32", "float64"] = "float32"
+    outrider_theta_fit_interval: int = 1
+    outrider_early_stopping: bool = False
+    outrider_early_stopping_patience: int = 5
+    outrider_early_stopping_min_delta: float = 1e-5
+    outrider_early_stopping_min_epochs: int = 10
     
     # Preprocessing params
     max_allowed_NAs_per_protein: float = 0.3
@@ -53,6 +59,8 @@ class ProtriderConfig:
     log_func: Optional[Callable] = field(init=False, repr=False, default=None)
     base_fn: Callable = field(init=False, repr=False, default=None)
     device_torch: torch.device = field(init=False, repr=False, default=None)
+    outrider_torch_dtype: torch.dtype = field(init=False, repr=False, default=torch.float32)
+    outrider_numpy_dtype: type = field(init=False, repr=False, default=np.float32)
     
     # Covariates
     cov_used: Optional[List[str]] = None
@@ -72,7 +80,7 @@ class ProtriderConfig:
     n_epochs: int = 100
     lr: float = 1e-4
     batch_size: Optional[int] = None
-    find_q_method: str = "OHT"  # "OHT", "gs", or an integer
+    find_q_method: Union[str, int] = "OHT"  # "OHT", "gs", or an integer
     init_pca: bool = True
     h_dim: Optional[int] = None
     autoencoder_loss: str = "MSE" # MSE or NLL
@@ -93,7 +101,7 @@ class ProtriderConfig:
     pval_adj: Literal["by", "bh", "holm"] = "by"
     pval_sided: Literal["two-sided", "left", "right"] = "two-sided"
     calculate_one_sided_pval: bool = False
-    pseudocount: float = 0.01
+    pseudocount: Optional[float] = None  # Defaults to 1 for OUTRIDER, 0.01 otherwise.
     
     # Reporting params
     outlier_threshold: float = 0.1
@@ -136,6 +144,10 @@ class ProtriderConfig:
         # Validation
         if self.analysis not in {"protrider", "outrider", "fraser"}:
             raise ValueError("analysis must be 'protrider', 'outrider', or 'fraser'")
+        if self.pseudocount is None:
+            self.pseudocount = 1.0 if self.analysis == "outrider" else 0.01
+        if not np.isfinite(self.pseudocount) or self.pseudocount <= 0:
+            raise ValueError("pseudocount must be finite and positive")
         if self.max_allowed_NAs_per_protein < 0 or self.max_allowed_NAs_per_protein > 1:
             raise ValueError("max_allowed_NAs_per_protein must be between 0 and 1")
         
@@ -151,8 +163,15 @@ class ProtriderConfig:
         if self.outlier_threshold < 0 or self.outlier_threshold > 1:
             raise ValueError("outlier_threshold must be between 0 and 1")
         
+        if isinstance(self.find_q_method, int):
+            self.find_q_method = str(self.find_q_method)
+        if not isinstance(self.find_q_method, str):
+            raise ValueError("find_q_method must be 'OHT', 'gs', or an integer")
         if self.find_q_method not in ["OHT", "gs"] and not self.find_q_method.isdigit():
             raise ValueError("find_q_method must be 'OHT', 'gs', or an integer string")
+
+        if self.autoencoder_loss not in {"MSE", "NLL", "BBL"}:
+            raise ValueError("autoencoder_loss must be 'MSE', 'NLL', or 'BBL'.")
         
         if self.presence_absence and self.n_layers != 1:
             import warnings
@@ -165,14 +184,44 @@ class ProtriderConfig:
                 raise ValueError("OUTRIDER requires pval_dist='nb'.")
             if self.cross_val:
                 raise NotImplementedError("OUTRIDER cross-validation is not implemented.")
+            if self.find_q_method == "gs":
+                raise NotImplementedError(
+                    "OUTRIDER grid-search injection is not implemented for count-scale targets; use OHT or a fixed q."
+                )
             if self.presence_absence:
                 raise NotImplementedError("OUTRIDER presence/absence modelling is not implemented.")
+            if self.log_func_name != "log":
+                raise ValueError("OUTRIDER uses the natural-log count transformation; set log_func_name='log'.")
+            if self.outrider_precision not in {"float32", "float64"}:
+                raise ValueError("outrider_precision must be 'float32' or 'float64'.")
+            self.outrider_torch_dtype, self.outrider_numpy_dtype = {
+                "float32": (torch.float32, np.float32),
+                "float64": (torch.float64, np.float64),
+            }[self.outrider_precision]
+            if type(self.outrider_theta_fit_interval) is not int or self.outrider_theta_fit_interval < 1:
+                raise ValueError("outrider_theta_fit_interval must be a positive integer.")
+            if self.outrider_early_stopping_patience < 1:
+                raise ValueError("outrider_early_stopping_patience must be at least 1.")
+            if self.outrider_early_stopping_min_delta < 0:
+                raise ValueError("outrider_early_stopping_min_delta must be non-negative.")
+            if self.outrider_early_stopping_min_epochs < 1:
+                raise ValueError("outrider_early_stopping_min_epochs must be at least 1.")
+            if (
+                self.outrider_early_stopping
+                and self.outrider_early_stopping_min_epochs > self.n_epochs
+            ):
+                raise ValueError(
+                    "outrider_early_stopping_min_epochs cannot exceed n_epochs "
+                    "when OUTRIDER early stopping is enabled."
+                )
             if self.fpkmCutoff is not None and self.fpkmCutoff < 0:
                 raise ValueError("fpkmCutoff must be non-negative.")
             if not 0 < self.fpkm_percentile <= 1:
                 raise ValueError("fpkm_percentile must be in (0, 1].")
             if self.fpkmCutoff is not None and not self.gtf:
                 raise ValueError("A GTF is required when OUTRIDER FPKM filtering is enabled.")
+        elif self.outrider_early_stopping:
+            raise ValueError("outrider_early_stopping is only available for OUTRIDER analysis.")
         
         # Set log_func and base_fn based on log_func_name
         if self.log_func_name == "log2":

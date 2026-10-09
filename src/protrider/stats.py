@@ -1,15 +1,25 @@
+import logging
+
 import numpy as np
 import pandas as pd
 import scipy
-import tqdm
 import torch
+import tqdm
 from joblib import Parallel, delayed
-import logging
-
 
 __all__ = ["fit_residuals", "get_pvals", "adjust_pvals", "get_pvals_per_gene"]
 
 logger = logging.getLogger(__name__)
+
+
+def _outrider_expected_counts(df_out, size_factors):
+    """Construct finite expected counts in the model output's precision."""
+    logits = df_out.to_numpy()
+    finfo = np.finfo(logits.dtype)
+    max_factor = np.maximum(np.max(size_factors), 1.0)
+    max_log = np.log(finfo.max) - np.log(max_factor) - 2.0
+    min_log = np.log(finfo.tiny)
+    return np.exp(np.clip(logits, min_log, max_log)) * size_factors
 
 def fit_residuals(dataset, df_out, model, config):
     if config.analysis == 'protrider':
@@ -27,19 +37,23 @@ def fit_residuals(dataset, df_out, model, config):
             raise ValueError(f"Unknown distribution: {dis}")
         
     elif config.analysis == "outrider":
-        df_out_clamped = np.clip(df_out, -700, 700)
-        df_res = np.exp(df_out_clamped) * dataset.size_factors.cpu().numpy()
-        df_out = df_res
-        sigma = None
+        expected = _outrider_expected_counts(
+            df_out, dataset.size_factors_array
+        )
         df0 = None
-
-        mu, theta = model.get_dispersion_parameters()
-
-        if mu is None:
-            # Fitting NB for outrider if it is not set yet
-            model.fit_dispersion(torch.tensor(dataset.raw_filtered.T.values, dtype=torch.float32), torch.tensor(df_res.T.values, dtype=torch.float32)) 
-            mu, theta = model.get_dispersion_parameters() #new
-        sigma = theta
+        model.fit_dispersion(
+            dataset.raw_x,
+            torch.as_tensor(expected),
+            fit_mean_scale=not config.autoencoder_training,
+            batch_size=config.batch_size,
+        )
+        mu, sigma = model.get_dispersion_parameters()
+        expected *= mu[None, :]
+        df_res = pd.DataFrame(
+            expected,
+            index=dataset.data.index,
+            columns=dataset.data.columns,
+        )
 
     elif config.analysis == "fraser":
         sigma = None
@@ -56,7 +70,8 @@ def fit_residuals(dataset, df_out, model, config):
     return mu, sigma, df0, df_res
 
 
-def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian', n_jobs=-1):
+def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided', dis='gaussian', n_jobs=-1,
+              pseudocount=1.0):
     hows = ('two-sided', 'left', 'right')
     if not how in hows:
         raise ValueError(f'Method should be in <{hows}>')
@@ -70,7 +85,7 @@ def get_pvals(res, mu, sigma, x_true=None, theta=None, df0=None, how='two-sided'
         assert df0 is not None, "df0 should be provided for t-distribution"
         pvals, z = get_pv_t(res, df0=df0, sigma=sigma, mu=mu, how=how, n_jobs=n_jobs)
     elif dis == 'nb':
-        z, _, _, _ = calc_effect(x_true, res, "zscores")
+        z, _, _, _ = calc_effect(x_true, res, "zscores", pseudocount=pseudocount)
         pvals = get_pv_nb(counts=x_true, res=res, mu=mu, theta=theta, how=how)
     elif dis == 'bb':
         pvals, z = get_pv_bb(K=x_true, N=res, mu=mu, rho=sigma, how=how) 
@@ -156,7 +171,7 @@ def _get_pv_norm(res, mu, sigma, how='two-sided'):
     return pvals, z
 
 
-def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
+def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta'], pseudocount=1.0):
     """
     Calculates effect sizes based on fitted expected values
 
@@ -169,6 +184,8 @@ def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
     Returns:
         zscore, delta, outrider_fc, outrider_l2fc.
     """
+    res = np.asarray(res)
+    counts = np.asarray(counts, dtype=res.dtype)
     outrider_fc = None
     outrider_l2fc = None
     delta = None
@@ -181,14 +198,20 @@ def calc_effect(counts, res, effect_type=['fold_change', 'zscores', 'delta']):
             f'Unknown effect_type: {e_type}')
 
     if "fold_change" in effect_type or "zscores" in effect_type:
-        outrider_fc = (counts + 1) / (res + 1) 
-        outrider_l2fc = np.log2(counts + 1) -  np.log2(res + 1)
+        outrider_fc = (counts + pseudocount) / (res + pseudocount)
+        outrider_l2fc = np.log2(counts + pseudocount) - np.log2(res + pseudocount)
 
     delta = counts - res
     if "delta" in effect_type:
         outrider_delta = delta
     if "zscores" in effect_type:
-        zScores = (outrider_l2fc - np.mean(outrider_l2fc, axis=0, keepdims=True)) / np.std(outrider_l2fc, axis=0, ddof=1, keepdims=True)
+        sd = np.std(outrider_l2fc, axis=0, ddof=1, keepdims=True)
+        zScores = np.divide(
+            outrider_l2fc - np.mean(outrider_l2fc, axis=0, keepdims=True),
+            sd,
+            out=np.zeros_like(outrider_l2fc),
+            where=sd > 0,
+        )
 
     return zScores, delta, outrider_fc, outrider_l2fc
 
@@ -200,7 +223,8 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     Parameters:
         counts: observed values (samples, genes)
         res: predicted counts (samples, genes)
-        mu: baseline expression levels (genes,)
+        mu: retained for compatibility and ignored; ``res`` is the complete
+            expected-count matrix.
         theta: dispersion parameters (genes,)
         how: 'two-sided', 'left', or 'right'
     Returns:
@@ -210,7 +234,10 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     if how not in ('two-sided', 'left', 'right'):
         raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
 
-    mean = res * mu[np.newaxis, :]
+    mean = np.asarray(res)
+    dtype = mean.dtype
+    counts = np.asarray(counts)
+    theta = np.asarray(theta, dtype=dtype)
     size = np.broadcast_to(theta[np.newaxis, :], counts.shape)
     p = size / (size + mean)
 
@@ -219,11 +246,14 @@ def get_pv_nb(counts, res, mu, theta, how='two-sided'):
     dval = scipy.stats.nbinom.pmf(counts, n=size, p=p)
 
     if how == 'left':
-        return pless
+        return np.asarray(pless, dtype=dtype)
     elif how == 'right':
-        return 1 - pless + dval
+        return np.asarray(1 - pless + dval, dtype=dtype)
     else:  # two-sided
-        return 2 * np.minimum(np.minimum(pless, 1 - pless + dval), 0.5)
+        return np.asarray(
+            2 * np.minimum(np.minimum(pless, 1 - pless + dval), 0.5),
+            dtype=dtype,
+        )
 
 def get_pv_bb(K, N, mu, rho, how='two-sided'):
     """
@@ -242,10 +272,12 @@ def get_pv_bb(K, N, mu, rho, how='two-sided'):
         raise ValueError(f"Invalid 'how': {how}. Choose from 'two-sided', 'left', or 'right'.")
     
     K = np.asarray(K, dtype=int)
-    N = np.asarray(N, dtype=float)
+    # SciPy's beta-binomial CDF is evaluated in float64 so the R-reference
+    # p-value tolerance is preserved for very small probabilities.
+    N = np.asarray(N, dtype=np.float64)
 
-    mu_arr  = np.asarray(mu,  dtype=float)
-    rho_arr = np.asarray(rho, dtype=float)  # (junctions,)
+    mu_arr  = np.asarray(mu, dtype=np.float64)
+    rho_arr = np.asarray(rho, dtype=np.float64)  # (junctions,)
 
     # mu is stored as (junctions, samples) ; transpose to (samples, junctions)
     if mu_arr.ndim == 2:

@@ -36,12 +36,43 @@ protrider --help
 
 - **Protein intensities**: CSV, TSV, or Parquet file
   - **File format**: Columns represent **samples**, rows represent **proteins** (wide format)
-  - Example: `sample_data/protrider_sample_dataset.tsv`
+  - Example: `samples/data/protrider_sample_dataset.tsv`
 - **Sample annotation** (optional): CSV or tab-separated file containing known covariates
   - Format: Each row represents a sample
-  - Example: `sample_data/sample_annotations.tsv`
+  - Example: `samples/data/sample_annotations.tsv`
 
-An example dataset can be found in this repository under `sample_data/`. 
+An example dataset can be found in this repository under `samples/data/`.
+
+### OUTRIDER RNA-count mode
+
+For `analysis: outrider`, supply integer RNA-seq counts and use `genes_as_rows`
+(genes × samples) or `genes_as_columns` (samples × genes). Zeros are valid
+counts. OUTRIDER uses `log((count + pseudocount) / size_factor)` as input,
+with `pseudocount: 1.0` by default to match R OUTRIDER, and the
+negative-binomial expected count `size_factor * exp(decoder_output)` throughout
+training and scoring. FPKM filtering uses `fpkm_percentile: 0.95` by default,
+which retains genes above the cutoff in the upper 5% of samples.
+When autoencoder training is disabled, the PCA-only path additionally fits the per-gene mean multiplier used by the original OUTRIDER PCA correction.
+
+Set `outrider_precision` to `float32` (default) or `float64` for OUTRIDER floating-point computations before p-value scoring: DESeq2 size factors, FPKM filtering, OHT, PCA initialization, covariate centering, autoencoder parameters, training and inference, expected-count reconstruction, and periodic and final dispersion fitting. Configuration validates this choice once and supplies its NumPy and PyTorch dtypes. Each operation preserves its input precision; there are no separate float32 and float64 implementations. Raw counts remain stored as integers. At negative-binomial p-value scoring, the fitted expected counts and theta are promoted to float64 without refitting; p-values, multiple-testing correction, z-scores, fold changes, and residuals use float64 in either mode. Checkpoints retain the model's configured precision. The autoencoder uses the natural-log transform. OUTRIDER supports OHT or a fixed latent dimension, and currently rejects grid-search injection and cross-validation because those count-scale paths are not implemented consistently. Its `pseudocount` also applies to OHT, z-scores, and reported fold changes; changing it from `1.0` changes the method and results. PROTRIDER and FRASER retain the `0.01` default.
+
+OHT follows [R OUTRIDER's `estimateBestQ`](https://github.com/gagneurlab/OUTRIDER/blob/b5dabe389fbcbead6de7d8c0287a194dcba8fe41/R/method-estimateBestQ.R): it normalizes counts by size factors, computes `log2((normalized_count + pseudocount) / (gene_mean + pseudocount))`, and standardizes each gene using its sample standard deviation before SVD. It includes the Marchenko–Pastur median correction in the threshold, permits `q = 1`, and falls back to `q = 2` only when no singular value exceeds the threshold. OHT follows `outrider_precision`, including its integral and threshold. The integral uses a smooth change of variables and vectorized NumPy trapezoidal integration in the selected dtype, retaining the original 0.001 median-search tolerance. Its SVD is separate from the autoencoder's PCA initialization. As in R, genes with undefined standardized values (such as zero-variance genes) cause OHT to fail. A fixed `find_q_method` bypasses OHT.
+
+Existing checkpoints retain their saved `q`. Use a fresh output directory without a checkpoint to rerun OHT selection. These OHT changes apply only to `analysis: outrider`; PROTRIDER and FRASER keep their existing selection methods.
+
+Set `outrider_theta_fit_interval` to a positive integer to control theta fitting during training (default: `1`, every epoch). For example, `10` fits theta after epochs 10, 20, 30, etc. Between fits, training and loss evaluation use the current theta, starting with the robust moments estimate. Theta is always refitted after restoring the best model weights and again for final statistics, even if training ends before the next scheduled fit.
+
+Set `batch_size` (for example, `512`) to bound GPU memory during both autoencoder training and OUTRIDER theta fitting. Theta fitting still uses every sample at each optimizer step: it accumulates the likelihood and gradients over chunks of that size. The full expected-count matrix is kept on the CPU between chunks, and the final statistics fit uses the same batch size. With `batch_size` unset, the full-cohort fitting path remains in use.
+
+OUTRIDER inference keeps the model and input on the configured device and transfers predictions to CPU by batch for statistical scoring. NLL accumulation stays on the device until the final scalar is read. PROTRIDER and FRASER retain their existing inference behavior.
+
+OUTRIDER early stopping is optional and disabled by default. Enable it with `outrider_early_stopping: true`; `outrider_early_stopping_min_epochs`, `outrider_early_stopping_patience`, and `outrider_early_stopping_min_delta` control when training stops. It monitors the full-cohort negative-binomial NLL every epoch using the current theta, restores the weights from the epoch with the lowest NLL, and refits theta for those restored weights. Patience is counted in epochs, so early stopping can occur between theta fits. `n_epochs` remains the maximum number of epochs.
+
+OUTRIDER outputs `expected_counts.csv` and `residuals.csv`; the latter is
+observed count minus expected count. `df_expected_counts` and
+`df_raw_residuals` expose the same matrices in the Python API. OUTRIDER
+adjusts p-values independently for each sample across its genes.
+The final checkpoint is written after the definitive full-cohort dispersion fit and records theta, effective mean scale, size factors, identifiers, filtering metadata, and configuration.
 
 ### Configuration file
 
@@ -165,5 +196,3 @@ If you use this tool, please cite the original paper:
     eprint = {https://academic.oup.com/bioinformatics/advance-article-pdf/doi/10.1093/bioinformatics/btaf628/65416092/btaf628.pdf},
 }
 ```
-
-

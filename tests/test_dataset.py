@@ -1,6 +1,7 @@
 import numpy as np
 
 from protrider.datasets import OutriderDataset
+from protrider.datasets.outrider_oht import outrider_oht
 from protrider.datasets.covariates import parse_covariates
 from protrider.datasets.read_inputs import read
 import pandas as pd
@@ -46,3 +47,11 @@ def test_outrider_dataset_uses_centered_covariates(gene_expression_path, gene_an
 
     np.testing.assert_allclose(dataset.covariates.cpu().numpy(), centered_covariates)
     np.testing.assert_allclose(dataset.raw_covariates.cpu().numpy(), raw_covariates)
+
+
+def test_outrider_oht_uses_configured_pseudocount():
+    counts = np.array([[0, 2, 10], [1, 5, 8], [3, 1, 14], [7, 9, 2], [2, 4, 6]])
+    size_factors = np.array([1.0, 1.2, 0.9, 1.5, 1.1])
+    default = outrider_oht(counts, size_factors)
+    custom = outrider_oht(counts, size_factors, pseudocount=0.5)
+    assert not np.allclose(default["singular_values"], custom["singular_values"])

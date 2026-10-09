@@ -20,6 +20,7 @@ class TestProtriderConfig:
         # Check defaults are set
         assert config.seed == 42
         assert config.n_epochs == 100
+        assert config.outrider_theta_fit_interval == 1
         assert config.lr == 1e-4
         assert config.device == "gpu"
     
@@ -114,6 +115,86 @@ class TestConfigValidation:
                 input_intensities="data.csv",
                 lr=0
             )
+
+    def test_outrider_rejects_inconsistent_execution_paths(self):
+        base = {
+            "out_dir": "output",
+            "input_intensities": "counts.tsv",
+            "analysis": "outrider",
+            "autoencoder_loss": "NLL",
+            "pval_dist": "nb",
+        }
+        with pytest.raises(NotImplementedError, match="grid-search injection"):
+            ProtriderConfig(**base, find_q_method="gs")
+        with pytest.raises(ValueError, match="natural-log"):
+            ProtriderConfig(**base, log_func_name="log2")
+        with pytest.raises(ValueError, match="outrider_precision"):
+            ProtriderConfig(**base, outrider_precision="float16")
+
+    def test_outrider_pseudocount_default_and_override(self, tmp_path):
+        base = {
+            "input_intensities": "counts.tsv",
+            "analysis": "outrider",
+            "autoencoder_loss": "NLL",
+            "pval_dist": "nb",
+        }
+        config = ProtriderConfig(**base)
+        assert config.pseudocount == 1.0
+        config.save(tmp_path)
+        assert load_config(tmp_path / "config.yaml").pseudocount == 1.0
+
+        assert ProtriderConfig(**base, pseudocount=0.5).pseudocount == 0.5
+        with pytest.raises(ValueError, match="pseudocount must be finite and positive"):
+            ProtriderConfig(**base, pseudocount=0)
+
+    def test_outrider_early_stopping_validation(self):
+        base = {
+            "out_dir": "output",
+            "input_intensities": "counts.tsv",
+            "analysis": "outrider",
+            "autoencoder_loss": "NLL",
+            "pval_dist": "nb",
+        }
+        with pytest.raises(ValueError, match="patience must be at least 1"):
+            ProtriderConfig(**base, outrider_early_stopping_patience=0)
+        with pytest.raises(ValueError, match="min_delta must be non-negative"):
+            ProtriderConfig(**base, outrider_early_stopping_min_delta=-1)
+        with pytest.raises(ValueError, match="cannot exceed n_epochs"):
+            ProtriderConfig(
+                **base,
+                n_epochs=2,
+                outrider_early_stopping=True,
+                outrider_early_stopping_min_epochs=3,
+            )
+
+        config = ProtriderConfig(
+            **base,
+            n_epochs=3,
+            outrider_early_stopping=True,
+            outrider_early_stopping_min_epochs=3,
+        )
+        assert config.outrider_early_stopping
+
+    @pytest.mark.parametrize("interval", [0, -1, 1.5, "10", True, None])
+    def test_outrider_theta_fit_interval_validation(self, interval):
+        with pytest.raises(ValueError, match="outrider_theta_fit_interval must be a positive integer"):
+            ProtriderConfig(
+                input_intensities="counts.tsv", analysis="outrider",
+                autoencoder_loss="NLL", pval_dist="nb",
+                outrider_theta_fit_interval=interval,
+            )
+
+    def test_outrider_theta_fit_interval_yaml_roundtrip(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "input_intensities": "counts.tsv", "analysis": "outrider",
+            "autoencoder_loss": "NLL", "pval_dist": "nb",
+            "outrider_theta_fit_interval": 10,
+        }))
+        config = load_config(config_path)
+        assert config.outrider_theta_fit_interval == 10
+        config.save(tmp_path)
+        assert load_config(config_path).outrider_theta_fit_interval == 10
     
     def test_invalid_max_na_too_high(self):
         """Test that max_allowed_NAs_per_protein > 1 raises error."""

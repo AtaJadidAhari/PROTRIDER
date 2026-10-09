@@ -21,6 +21,32 @@ logger = logging.getLogger(__name__)
 #    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 #)
 
+
+def outrider_expected_counts(output, size_factors):
+    """Convert OUTRIDER logits to finite expected counts in their active dtype."""
+    size_factors = size_factors.to(dtype=output.dtype, device=output.device)
+    finfo = torch.finfo(output.dtype)
+    max_size_factor = torch.clamp(size_factors.max(), min=1.0)
+    max_log = torch.log(torch.tensor(finfo.max, dtype=output.dtype, device=output.device))
+    max_log = max_log - torch.log(max_size_factor) - 2.0
+    min_log = torch.log(torch.tensor(finfo.tiny, dtype=output.dtype, device=output.device))
+    return torch.exp(torch.clamp(output, min=min_log, max=max_log)) * size_factors
+
+
+def _forward_outrider_in_batches(model, X, mask, covariates, batch_size=None):
+    """Run OUTRIDER inference in bounded-size chunks and retain all latent values."""
+    if batch_size is None or batch_size >= len(X):
+        return model(X, mask, cond=covariates)
+
+    outputs = []
+    latent_values = []
+    for start in range(0, len(X), batch_size):
+        stop = min(start + batch_size, len(X))
+        outputs.append(model(X[start:stop], mask[start:stop], cond=covariates[start:stop]))
+        latent_values.append(model.get_latent_values())
+    model.latent_values = torch.cat(latent_values, dim=0)
+    return torch.cat(outputs, dim=0)
+
 @dataclass
 class ModelInfo:
     """Stores model information."""
@@ -31,6 +57,11 @@ class ModelInfo:
     train_losses: np.array
     df0: np.array = None  # Degrees of freedom for the t-distribution, if applicable
     df_folds: Optional[pd.DataFrame] = None  # DataFrame with fold assignments (for CV runs)
+    final_consistent_nll: Optional[np.array] = None
+    epochs_run: Optional[np.array] = None
+    best_epoch: Optional[np.array] = None
+    stopped_early: Optional[np.array] = None
+    stopping_reason: Optional[np.array] = None
     
     def save(self, out_dir: str) -> None:
         """
@@ -48,6 +79,14 @@ class ModelInfo:
         
         out_dir = Path(out_dir)
         model_info_dict = dataclasses.asdict(self)
+
+        # Keep the established PROTRIDER/FRASER report schema unchanged.
+        for field_name in (
+            "final_consistent_nll", "epochs_run", "best_epoch",
+            "stopped_early", "stopping_reason",
+        ):
+            if model_info_dict.get(field_name) is None:
+                model_info_dict.pop(field_name)
         
         # Remove df_folds from model_info_dict to handle separately
         df_folds = model_info_dict.pop("df_folds", None)
@@ -201,9 +240,6 @@ class OmicAutoencoder(nn.Module):
 
         self.latent_values = z[0] if self.presence_absence else z
 
-        if self.model_type == "outrider":
-            out = torch.clip(out, -700, 700)
-
         return out
 
     def initialize_wPCA(self, Vt_q, omic_means, n_cov=0):
@@ -215,10 +251,13 @@ class OmicAutoencoder(nn.Module):
         Vt_q = torch.from_numpy(Vt_q).to(device) # (q, n_prots)
 
         ## ENCODER weights: (q, n_prots + n_cov), bias: (q)
-        # Covariates are concatenated after omics features.  Preserve their
-        # random initialization without accidentally copying gene weights.
-        cov_enc_init = (self.encoder.model.weight.data[:, -n_cov:]
-                        if n_cov else self.encoder.model.weight.data[:, :0])
+        # OUTRIDER covariates occupy the trailing columns and must remain
+        # separate from the PCA-initialized gene weights. Other model types
+        # retain their established leading-column initialization behavior.
+        if self.model_type == "outrider" and n_cov:
+            cov_enc_init = self.encoder.model.weight.data[:, -n_cov:]
+        else:
+            cov_enc_init = self.encoder.model.weight.data[:, :n_cov]
         self.encoder.model.weight.data.copy_(
             torch.cat([Vt_q.to(device),
                        cov_enc_init.to(device)], axis=1)
@@ -231,8 +270,10 @@ class OmicAutoencoder(nn.Module):
 
         ## DECODER weights: (n_prots, q + n_cov), bias: (n_prot)
         self.decoder.model.bias.data.copy_(torch.from_numpy(omic_means).squeeze(0))
-        cov_dec_init = (self.decoder.model.weight.data[:, -n_cov:]
-                        if n_cov else self.decoder.model.weight.data[:, :0])
+        if self.model_type == "outrider" and n_cov:
+            cov_dec_init = self.decoder.model.weight.data[:, -n_cov:]
+        else:
+            cov_dec_init = self.decoder.model.weight.data[:, :n_cov]
         self.decoder.model.weight.data.copy_(
             torch.cat([Vt_q.T.to(device),
                        cov_dec_init.to(device)], axis=1)
@@ -335,36 +376,165 @@ def train_val(train_subset: ProtriderSubset, val_subset: ProtriderSubset, model,
     return np.array(train_losses), np.array(val_losses)
 
 
-def train(dataset, model, criterion, n_epochs=100, learning_rate=1e-3, batch_size=None):
+def train(
+    dataset,
+    model,
+    criterion,
+    n_epochs=100,
+    learning_rate=1e-3,
+    batch_size=None,
+    outrider_early_stopping=False,
+    outrider_early_stopping_patience=5,
+    outrider_early_stopping_min_delta=1e-5,
+    outrider_early_stopping_min_epochs=10,
+    outrider_theta_fit_interval=1,
+):
+    if model.model_type == "outrider" and (
+        type(outrider_theta_fit_interval) is not int or outrider_theta_fit_interval < 1
+    ):
+        raise ValueError("outrider_theta_fit_interval must be a positive integer.")
     # start data;pader
     if batch_size is None:
         batch_size = dataset.X.shape[0]
-    data_loader = torch.utils.data.DataLoader(dataset,
-                                              batch_size=batch_size,
-                                              shuffle=True)
+    if model.model_type == "outrider":
+        # Preserve RandomSampler's order and DataLoader's RNG consumption while
+        # fetching complete tensor batches without sample-by-sample collation.
+        sampler = torch.utils.data.BatchSampler(
+            torch.utils.data.RandomSampler(dataset), batch_size, drop_last=False
+        )
+        data_loader = torch.utils.data.DataLoader(dataset, sampler=sampler, batch_size=None)
+    else:
+        data_loader = torch.utils.data.DataLoader(dataset,
+                                                batch_size=batch_size,
+                                                shuffle=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9995)
+    scheduler = (None if model.model_type == "outrider" else
+                 torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9995))
 
     best_model_wts = copy.deepcopy(model.state_dict())  # placeholder
-    best_loss = 10**9
+    best_loss = float("inf")
+    best_epoch = 0
+    significant_loss = float("inf")
+    epochs_without_significant_improvement = 0
+    stopped_early = False
+    stopping_reason = "maximum epochs reached"
     train_losses = []
     for epoch in tqdm(range(n_epochs)):
-        running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(data_loader, model, criterion, optimizer)
-        logger.info('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
-                                                                          running_reconstruction_loss, running_bce_loss))
-        scheduler.step()
+        running_loss, running_reconstruction_loss, running_bce_loss = _train_iteration(
+            data_loader, model, criterion, optimizer,
+            collect_losses=model.model_type != "outrider",
+        )
+
+        if model.model_type == "outrider":
+            running_loss, running_reconstruction_loss, running_bce_loss = _fit_and_evaluate_outrider(
+                dataset, model, criterion, batch_size=batch_size,
+                refit_theta=(epoch + 1) % outrider_theta_fit_interval == 0,
+            )
+            logger.info("[%d] OUTRIDER full-cohort NLL: %.6f", epoch + 1, running_loss)
+        else:
+            logger.info('[%d] loss: %.6f, reconstruction loss: %.6f, bce loss: %.6f' % (epoch + 1, running_loss,
+                                                                              running_reconstruction_loss, running_bce_loss))
+            scheduler.step()
+
         if running_loss < best_loss:
             best_loss = running_loss
             best_model_wts = copy.deepcopy(model.state_dict())  # save weights
+            best_epoch = epoch + 1
         train_losses.append(running_loss)
+
+        if model.model_type == "outrider" and outrider_early_stopping:
+            if significant_loss - running_loss > outrider_early_stopping_min_delta:
+                significant_loss = running_loss
+                epochs_without_significant_improvement = 0
+            else:
+                epochs_without_significant_improvement += 1
+
+            if (
+                epoch + 1 >= outrider_early_stopping_min_epochs
+                and epochs_without_significant_improvement
+                >= outrider_early_stopping_patience
+            ):
+                stopped_early = True
+                stopping_reason = (
+                    "full-cohort NLL did not improve by more than "
+                    f"{outrider_early_stopping_min_delta:g} for "
+                    f"{outrider_early_stopping_patience} epochs"
+                )
+                logger.info("OUTRIDER early stopping at epoch %d: %s", epoch + 1, stopping_reason)
+                break
     
     model.load_state_dict(best_model_wts)
-    
+
+    if model.model_type == "outrider":
+        # Theta must correspond to the restored best autoencoder weights.
+        running_loss, running_reconstruction_loss, running_bce_loss = _fit_and_evaluate_outrider(
+            dataset, model, criterion, batch_size=batch_size
+        )
+        model.outrider_training_info = {
+            "epochs_run": len(train_losses),
+            "best_epoch": best_epoch,
+            "stopped_early": stopped_early,
+            "stopping_reason": stopping_reason,
+        }
+
     return running_loss, running_reconstruction_loss, running_bce_loss, train_losses
 
 
-def _train_iteration(data_loader, model, criterion, optimizer):
+def _outrider_nll(expected, theta, raw_x, mask, criterion, batch_size=None):
+    """Evaluate a full-cohort NLL while transferring expected counts by batch."""
+    batch_size = batch_size or len(raw_x)
+    with torch.no_grad():
+        loss_sum = raw_x.new_zeros(())
+        observations = torch.zeros((), dtype=torch.long, device=raw_x.device)
+        for start in range(0, len(raw_x), batch_size):
+            stop = min(start + batch_size, len(raw_x))
+            loss, _, _ = criterion(
+                (theta, expected[start:stop].to(raw_x.device)),
+                raw_x[start:stop], mask[start:stop],
+            )
+            count = (~mask[start:stop]).sum()
+            loss_sum += loss * count
+            observations += count
+        return (loss_sum / observations).item()
+
+
+def _fit_and_evaluate_outrider(dataset, model, criterion, batch_size=None, refit_theta=True):
+    """Evaluate the complete cohort, optionally refitting theta first."""
+    with torch.no_grad():
+        model.eval()
+        if batch_size is None:
+            output = _forward_outrider_in_batches(
+                model, dataset.X, dataset.torch_mask, dataset.covariates, batch_size
+            )
+            expected = outrider_expected_counts(output, dataset.size_factors)
+        else:
+            # Keep the full expected-count matrix on the CPU. Only one forward
+            # pass and one likelihood chunk need GPU memory at a time.
+            chunks = []
+            for start in range(0, len(dataset.X), batch_size):
+                stop = min(start + batch_size, len(dataset.X))
+                output = model(
+                    dataset.X[start:stop], dataset.torch_mask[start:stop],
+                    cond=dataset.covariates[start:stop],
+                )
+                chunks.append(outrider_expected_counts(
+                    output, dataset.size_factors[start:stop]
+                ).cpu())
+            expected = torch.cat(chunks)
+            del chunks, output
+
+    if refit_theta:
+        model.fit_dispersion(dataset.raw_x, expected, batch_size=batch_size)
+        model.dispersion.clip_theta()
+    loss = _outrider_nll(
+        expected, model.dispersion.theta, dataset.raw_x, dataset.torch_mask, criterion, batch_size
+    )
+    return loss, loss, None
+
+
+def _train_iteration(data_loader, model, criterion, optimizer, collect_losses=True):
+    model.train()
     running_loss = 0.0
     running_reconstruction_loss = 0.0
     running_bce_loss = 0.0
@@ -385,9 +555,9 @@ def _train_iteration(data_loader, model, criterion, optimizer):
 
         # Calculate loss
         if model.model_type == "outrider":
-            _, theta = model.get_dispersion_parameters()
+            theta = model.dispersion.theta
 
-            x_pred = torch.exp(x_hat) * size_factors
+            x_pred = outrider_expected_counts(x_hat, size_factors)
             loss, reconstruction_loss, bce_loss = criterion((theta, x_pred), raw_x, mask)
         elif model.model_type == "protrider":
             loss, reconstruction_loss, bce_loss = criterion(x_hat, x, mask)
@@ -401,23 +571,18 @@ def _train_iteration(data_loader, model, criterion, optimizer):
         loss.backward()
         optimizer.step()
 
-        # Update dispersions in OUTRIDER model
-        if model.model_type == "outrider":
-            with torch.no_grad():
-                _, theta = model.get_dispersion_parameters()
-                x_pred = torch.exp(x_hat) * size_factors
-                model.fit_dispersion(raw_x.T, x_pred.T)
-                model.dispersion.clip_theta()
-                _, theta = model.get_dispersion_parameters()
-        elif model.model_type == "fraser":
+        # OUTRIDER dispersion is updated at the configured epoch interval in train(),
+        # never from a mini-batch.
+        if model.model_type == "fraser":
             with torch.no_grad():
                 model.fit_dispersion(K.T, N.T, x_hat)
                 model.dispersion.clip_rho()
 
         # Gather data and report
-        running_loss += loss.item()
-        running_reconstruction_loss += reconstruction_loss.item()
-        running_bce_loss += bce_loss.item() if bce_loss is not None else 0
+        if collect_losses:
+            running_loss += loss.item()
+            running_reconstruction_loss += reconstruction_loss.item()
+            running_bce_loss += bce_loss.item() if bce_loss is not None else 0
         n_batches += 1
 
     return running_loss / n_batches, running_reconstruction_loss / n_batches, running_bce_loss / n_batches
@@ -444,7 +609,10 @@ class NegativeBinomialLoss(nn.Module):
             raise ValueError("Theta must be provided for NB loss")
         
         if not isinstance(theta, torch.Tensor):
-            theta = torch.tensor(theta, dtype=torch.float32, device=x_true.device)
+            theta = torch.as_tensor(theta, dtype=x_pred.dtype, device=x_pred.device)
+        else:
+            theta = theta.to(dtype=x_pred.dtype, device=x_pred.device)
+        x_true = x_true.to(dtype=x_pred.dtype, device=x_pred.device)
         
         # Ensure theta has the right shape (1, genes) for broadcasting
         if theta.dim() == 1:
@@ -461,7 +629,7 @@ class NegativeBinomialLoss(nn.Module):
         log_prob = term1 + term2 + term3
         
         if mask is not None:
-            log_prob = torch.where(mask, torch.tensor(0.0, device=log_prob.device), log_prob)
+            log_prob = torch.where(mask, torch.zeros((), dtype=log_prob.dtype, device=log_prob.device), log_prob)
             nll = -log_prob.sum() / (~mask).sum()
         else:
             nll = -log_prob.mean()

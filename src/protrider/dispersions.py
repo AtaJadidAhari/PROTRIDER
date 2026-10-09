@@ -1,5 +1,6 @@
 import abc
 from typing import Optional
+import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -29,42 +30,95 @@ class OutriderDispersion():
             distribution = NegativeBinomialDistribution()
         #super().__init__(analysis='outrider', distribution=distribution)
         self.distribution = distribution
-        self.mu_scale = None
         self.theta = None
+        self.mean_scale = None
+        self._counts_cache = None
+
+    def _count_constants(self, counts, lower_bound, upper_bound, batched=False):
+        """Reuse count-only calculations until the tensor or its contents change."""
+        key = (counts._version, counts.dtype, counts.device, lower_bound, upper_bound, batched)
+        cached = self._counts_cache
+        if cached is None or cached[0] is not counts or cached[1] != key:
+            with torch.no_grad():
+                # The robust estimate sorts the entire count matrix. Keep that
+                # initialization off the GPU when the fit is memory bounded.
+                init_counts = counts.cpu() if batched else counts
+                theta_init = estimate_theta_robust_moments(
+                    init_counts, lower_bound, upper_bound
+                ).to(counts.device)
+                count_lgamma = None if batched else torch.lgamma(counts + 1)
+            self._counts_cache = (counts, key, theta_init, count_lgamma)
+        return self._counts_cache[2:]
 
     def get_parameters(self):
-        mu_scale = None if self.mu_scale is None else self.mu_scale.detach().cpu().numpy()
         theta = None if self.theta is None else self.theta.detach().cpu().numpy()
-        return mu_scale, theta
+        mean_scale = None if self.mean_scale is None else self.mean_scale.detach().cpu().numpy()
+        if mean_scale is None and theta is not None:
+            mean_scale = np.ones_like(theta)
+        return mean_scale, theta
     
-    def set_dispersion(self, theta):
+    def set_dispersion(self, theta, mean_scale=None):
         self.theta = theta
+        self.mean_scale = mean_scale
 
     def clip_theta(self, lower=0.01, upper=1000):
         self.theta = torch.clip(self.theta, lower, upper)
 
-    def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01, device=None):
+    def fit(self, x_true, x_pred, max_iter=100, lower_bound=0.01,
+            upper_bound=1000.0, device=None, fit_mean_scale=False, batch_size=None):
         """
-        x_true, x_pred: torch.Tensor, shape (genes, samples)
+        x_true, x_pred: torch.Tensor, shape (samples, genes). ``x_pred`` is
+        the full expected-count matrix, not a normalized mean.
+
+        ``fit_mean_scale`` is reserved for PCA/no-training correction, where
+        OUTRIDER fits a per-gene mean multiplier together with theta. A trained
+        autoencoder uses its decoder bias instead.
         """
 
-        x_true = x_true.to(dtype=torch.float32, device=device)
-        x_pred = x_pred.to(dtype=torch.float32, device=device)
-        
-        mu_scale_init, theta_init = self.distribution.init_fit(x_true, x_pred)
-        
-        # Reparameterization using exp, since LBFGS does not consider bounds:
-        # where theta = exp(p_theta) + lower_bound
-        # This ensures parameters >= lower_bound
-        # Use min=1e-8 to avoid log(0)
-        p_theta_init = torch.log(torch.clamp(theta_init - lower_bound, min=1e-8))
-        p_mu_scale_init = torch.log(torch.clamp(mu_scale_init - lower_bound, min=1e-8))
+        if x_true.shape != x_pred.shape:
+            raise ValueError("OUTRIDER theta fitting requires matching samples x genes matrices.")
+        device = device or x_true.device
+        dtype = x_pred.dtype
+        if batch_size is not None and batch_size < 1:
+            raise ValueError("batch_size must be a positive integer")
+        batched = batch_size is not None
+        if not batched:
+            x_true = x_true.to(dtype=dtype, device=device)
+            x_pred = x_pred.to(device)
+        theta_init, count_lgamma = self._count_constants(
+            x_true, lower_bound, upper_bound, batched=batched
+        )
+        theta_init = theta_init.to(dtype=dtype, device=device)
+        # Expected counts remain fixed during theta-only optimization. The PCA
+        # mean-scale fit must recompute this term as its mean changes.
+        count_log_mu = None if fit_mean_scale or batched else torch.xlogy(x_true, x_pred)
+        p_theta = nn.Parameter(torch.log(torch.clamp(theta_init - lower_bound, min=1e-8)))
+        parameters = [p_theta]
 
-        p_theta = nn.Parameter(p_theta_init.to(device))
-        p_mu_scale = nn.Parameter(p_mu_scale_init.to(device))
+        p_mean_scale = None
+        if fit_mean_scale:
+            if batched:
+                with torch.no_grad():
+                    scale_sum = torch.zeros_like(theta_init)
+                    for start in range(0, len(x_true), batch_size):
+                        stop = min(start + batch_size, len(x_true))
+                        counts = x_true[start:stop].to(dtype=dtype, device=device)
+                        expected = x_pred[start:stop].to(device)
+                        scale_sum += (counts / torch.clamp(
+                            expected, min=torch.finfo(dtype).tiny
+                        )).sum(dim=0)
+                    mean_scale_init = (scale_sum / len(x_true)).clamp(min=lower_bound)
+            else:
+                mean_scale_init = torch.mean(
+                    x_true / torch.clamp(x_pred, min=torch.finfo(dtype).tiny), dim=0
+                ).clamp(min=lower_bound)
+            p_mean_scale = nn.Parameter(
+                torch.log(torch.clamp(mean_scale_init - lower_bound, min=1e-8))
+            )
+            parameters.append(p_mean_scale)
 
         optimizer = optim.LBFGS(
-            [p_theta, p_mu_scale],
+            parameters,
             max_iter=max_iter,
             history_size=5,
             tolerance_change=2.2e-9,
@@ -73,25 +127,46 @@ class OutriderDispersion():
 
         def closure():
             optimizer.zero_grad()
-            
-            # Transform parameters (shape [genes])
-            theta = torch.exp(p_theta) + lower_bound
-            mu_scale = torch.exp(p_mu_scale) + lower_bound
-            
-            # Unsqueeze to [genes, 1] for broadcasting against data [genes, samples]
-            theta = theta.unsqueeze(1)
-            mu_scale = mu_scale.unsqueeze(1)
 
-            # Calculate loss and backpropagate
-            mu = x_pred * mu_scale
-            loss = self.distribution.loss(x_true, theta, mu)
-            loss.backward()
-            return loss
+            if batched:
+                total_loss = torch.zeros((), dtype=dtype, device=device)
+                for start in range(0, len(x_true), batch_size):
+                    stop = min(start + batch_size, len(x_true))
+                    counts = x_true[start:stop].to(dtype=dtype, device=device)
+                    expected = x_pred[start:stop].to(device)
+                    theta = torch.clamp(
+                        torch.exp(p_theta) + lower_bound, max=upper_bound
+                    ).unsqueeze(0)
+                    if p_mean_scale is not None:
+                        expected = expected * (torch.exp(p_mean_scale) + lower_bound).unsqueeze(0)
+                    loss = self.distribution.loss(counts, theta, expected)
+                    loss.backward()
+                    total_loss += loss.detach()
+                return total_loss
+            else:
+                theta = torch.clamp(torch.exp(p_theta) + lower_bound, max=upper_bound).unsqueeze(0)
+                expected = x_pred
+                if p_mean_scale is not None:
+                    expected = expected * (torch.exp(p_mean_scale) + lower_bound).unsqueeze(0)
+                if type(self.distribution) is NegativeBinomialDistribution:
+                    loss = self.distribution.loss(
+                        x_true, theta, expected,
+                        count_lgamma=count_lgamma, count_log_mu=count_log_mu,
+                    )
+                else:
+                    loss = self.distribution.loss(x_true, theta, expected)
+                loss.backward()
+                return loss
 
         optimizer.step(closure)
 
-        self.theta = (torch.exp(p_theta) + lower_bound).detach().cpu()
-        self.mu_scale = (torch.exp(p_mu_scale) + lower_bound).detach().cpu()
+        self.theta = torch.clamp(
+            torch.exp(p_theta) + lower_bound, max=upper_bound
+        ).detach()
+        self.mean_scale = (
+            (torch.exp(p_mean_scale) + lower_bound).detach()
+            if p_mean_scale is not None else None
+        )
 
 class FraserDispersion(): 
     def __init__(self, distribution: Optional[str] = None):
@@ -181,7 +256,7 @@ class Distribution(): # Do we need this base class?
 class NegativeBinomialDistribution(Distribution):
     def init_train(self, x_true, theta_min=0.01, theta_max=1000.0):
         """Initialize theta and mu for training: theta robust moments"""
-        theta = estimate_theta_robust_moments(x_true=x_true.T, theta_min=theta_min, theta_max=theta_max)
+        theta = estimate_theta_robust_moments(x_true=x_true, theta_min=theta_min, theta_max=theta_max)
         mu_scale = None
         return mu_scale, theta
 
@@ -190,8 +265,9 @@ class NegativeBinomialDistribution(Distribution):
         Initialize theta and mu for fitting: theta is dispersion, mu_scale the mean
         x_true, size_factors: torch.Tensor, shape (genes, samples)
         """
-        x_true = x_true.to(torch.float32)
-        size_factors = size_factors.to(torch.float32)
+        dtype = size_factors.dtype
+        x_true = x_true.to(dtype=dtype)
+        size_factors = size_factors.to(dtype=dtype)
         normalized = x_true / (size_factors + epsilon)
         
         # Calculate mean and var per gene (dim=1)
@@ -208,10 +284,12 @@ class NegativeBinomialDistribution(Distribution):
         mu_scale = torch.clamp(mu_scale, min=mu_min)
         return mu_scale, theta
 
-    def loss(self, x_true, theta, mu):
-        term_lgamma = torch.lgamma(x_true + theta) - torch.lgamma(theta) - torch.lgamma(x_true + 1)
+    def loss(self, x_true, theta, mu, *, count_lgamma=None, count_log_mu=None):
+        if count_lgamma is None:
+            count_lgamma = torch.lgamma(x_true + 1)
+        term_lgamma = torch.lgamma(x_true + theta) - torch.lgamma(theta) - count_lgamma
         term_t_log_t = torch.xlogy(theta, theta)
-        term_x_log_m = torch.xlogy(x_true, mu)
+        term_x_log_m = torch.xlogy(x_true, mu) if count_log_mu is None else count_log_mu
         term_tx_log_tm = torch.xlogy(x_true + theta, theta + mu)
         
         log_prob = term_lgamma + term_t_log_t + term_x_log_m - term_tx_log_tm
